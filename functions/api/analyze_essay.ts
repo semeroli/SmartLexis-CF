@@ -1,47 +1,62 @@
-export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Database }> = async (context) => {
+export async function onRequestPost(context) {
   const { request, env } = context;
 
   try {
+    // 1️⃣ 检查 API Key
+    if (!env.MODELSCOPE_API_KEY) {
+      return new Response(
+        JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
     const formData = await request.formData();
     const title = formData.get("title") || "未命名作文";
-    const studentId = formData.get("studentId") || "N/A";
+    const studentId = formData.get("studentId") || "unknown";
     const teacherId = formData.get("teacherId") || "system";
     const imagesJson = formData.get("images");
 
     if (!imagesJson) {
-      return new Response(JSON.stringify({ error: "缺少作文图片" }), { status: 400 });
-    }
-
-    const essayImages: string[] = JSON.parse(imagesJson as string);
-    const apiKey = env.MODELSCOPE_API_KEY;
-    if (!apiKey) throw new Error("未配置 MODELSCOPE_API_KEY");
-
-    const contentParts: any[] = [
-      {
-        type: "text",
-        text: `请对这篇题目为《${title}》的学生手写作文进行分析。
-要求：
-1. 先完整识别图片中的作文文字（尽量还原原文）。
-2. 从“立意深度、结构安排、语言表达、卷面书写”四个维度评分（满分60）。
-3. 给出优缺点与升格建议。
-4. 严格按照系统提示中的 JSON 格式输出。`,
-      },
-    ];
-
-    for (const imgBase64 of essayImages) {
-      contentParts.push({
-        type: "image_url",
-        image_url: { url: imgBase64 },
+      return new Response(JSON.stringify({ error: "缺少作文图片" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
       });
     }
 
+    const essayImages = JSON.parse(imagesJson as string);
+
+    // 2️⃣ 构造多模态内容（✅ 修复图片格式）
+    const contentParts = [
+      {
+        type: "text",
+        text: `请对这篇题目为《${title}》的学生手写作文进行深度诊断。
+要求：
+1. 先完整识别图片中的作文文字内容。
+2. 从“立意深度、结构安排、语言表达、卷面书写”四个维度评分（满分60）。
+3. 给出优缺点与升格建议。
+4. 严格按照系统提示的 JSON 格式输出。`,
+      },
+    ];
+
+    for (let img of essayImages) {
+      // ✅ 关键修复：确保是完整 Data URI
+      if (!img.startsWith("data:image/")) {
+        img = `data:image/jpeg;base64,${img}`;
+      }
+      contentParts.push({
+        type: "image_url",
+        image_url: { url: img },
+      });
+    }
+
+    // 3️⃣ 调用 ModelScope（Qwen3-VL）
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 55000);
+    const timeout = setTimeout(() => controller.abort(), 60000);
 
     const res = await fetch("https://api-inference.modelscope.cn/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${env.MODELSCOPE_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -49,15 +64,9 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
         messages: [
           {
             role: "system",
-            content: `
-你是一位资深语文阅卷组组长。
-请先识别作文原文，再进行评分。
+            content: `你是资深语文阅卷组组长。
+请严格按照以下 JSON 格式输出，不要输出其他文字：
 
-评分规则：
-- 总分：60 分
-- 四个维度：立意深度、结构安排、语言表达、卷面书写
-
-输出格式（JSON，不要输出其他文字）：
 {
   "essay_text": "作文原文内容",
   "score": 52,
@@ -71,13 +80,15 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
   "weaknesses": ["不足1", "不足2"],
   "suggestions": ["建议1", "建议2"],
   "summary": "总体评价（100字以内）"
-}
-`.trim(),
+}`,
           },
-          { role: "user", content: contentParts },
+          {
+            role: "user",
+            content: contentParts,
+          },
         ],
-        temperature: 0.3,
-        max_tokens: 4000,
+        temperature: 0.2,
+        max_tokens: 3500,
         stream: false,
       }),
       signal: controller.signal,
@@ -85,10 +96,19 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
 
     clearTimeout(timeout);
     const data = await res.json();
-    if (!res.ok) throw new Error(JSON.stringify(data));
 
-    let raw = data?.choices?.[0]?.message?.content ?? "";
-    raw = raw.replace(/^```json/, "").replace(/```$/, "").trim();
+    if (!res.ok) {
+      return new Response(
+        JSON.stringify({ error: "ModelScope API error", detail: data }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // 4️⃣ 解析 JSON
+    let raw = data.choices[0].message.content
+      .replace(/^```json/, "")
+      .replace(/```$/, "")
+      .trim();
 
     let result;
     try {
@@ -106,7 +126,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       };
     }
 
-    // ✅ D1
+    // 5️⃣ ✅ 写入 D1（完全保留你原来的表结构）
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_records (
         id TEXT PRIMARY KEY,
@@ -138,14 +158,27 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       )
       .run();
 
+    // 6️⃣ 返回给前端
     return new Response(
-      JSON.stringify({ success: true, id, title, result, date }),
+      JSON.stringify({
+        success: true,
+        id,
+        title,
+        result,
+        date,
+      }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (err: any) {
     if (err.name === "AbortError") {
-      return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), { status: 504 });
+      return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), {
+        status: 504,
+        headers: { "Content-Type": "application/json" },
+      });
     }
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
-};
+}
