@@ -1603,8 +1603,8 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
+      
       </main>
-
       {/* Edit Modal */}
       <AnimatePresence>
         {isEditModalOpen && editingStudent && (
