@@ -63,7 +63,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "Qwen/Qwen-VL-Chat", // ✅ 关键：换为 Qwen‑VL
+        model: "Qwen/Qwen2.5-VL-72B-Instruct", // ✅ 关键：换为 Qwen‑VL
         messages: [
           { role: "system", content: "你是资深语文阅卷老师。" },
           { role: "user", content: contentParts },
