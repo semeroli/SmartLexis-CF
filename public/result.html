@@ -4,118 +4,38 @@
   <meta charset="UTF-8" />
   <title>作文阅卷系统</title>
   <style>
-    body {
-      margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background: #f5f7fa;
-    }
-
-    .container {
-      display: flex;
-      height: 100vh;
-    }
-
-    /* 左侧：作文原文 */
-    .left {
-      width: 50%;
-      background: #fff;
-      padding: 24px;
-      overflow-y: auto;
-      border-right: 1px solid #e5e6eb;
-    }
-
-    .left h2 {
-      margin-top: 0;
-    }
-
-    #essay {
-      line-height: 2;
-      font-size: 16px;
-      white-space: pre-wrap;
-    }
-
-    .wrong-word {
-      background: #ff4d4f33;
-      color: #c91f37;
-      padding: 0 2px;
-      border-radius: 3px;
-      cursor: pointer;
-    }
-
-    /* 右侧：评分卡 */
-    .right {
-      width: 50%;
-      background: #fafbfc;
-      padding: 24px;
-      overflow-y: auto;
-    }
-
-    .card {
-      background: #fff;
-      padding: 20px;
-      border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,.08);
-      margin-bottom: 20px;
-    }
-
-    .score-row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-
-    .score-row input {
-      width: 80px;
-      padding: 6px;
-      font-size: 16px;
-    }
-
-    .dim {
-      display: flex;
-      justify-content: space-between;
-      margin: 6px 0;
-    }
-
-    ul {
-      padding-left: 20px;
-    }
-
-    button {
-      margin-top: 12px;
-      padding: 8px 16px;
-      background: #1677ff;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: #0958d9;
-    }
+    body { margin: 0; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fa; }
+    .container { display: flex; height: 100vh; }
+    .left { width: 50%; background: #fff; padding: 24px; overflow-y: auto; border-right: 1px solid #e5e6eb; }
+    .left h2 { margin-top: 0; }
+    #essay { line-height: 2; font-size: 16px; white-space: pre-wrap; }
+    .wrong-word { background: #ff4d4f33; color: #c91f37; padding: 0 2px; border-radius: 3px; cursor: pointer; }
+    .right { width: 50%; background: #fafbfc; padding: 24px; overflow-y: auto; }
+    .card { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 20px; }
+    .score-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .score-row input { width: 80px; padding: 6px; font-size: 16px; }
+    .dim { display: flex; justify-content: space-between; margin: 6px 0; }
+    ul { padding-left: 20px; }
+    button { margin-top: 12px; padding: 8px 16px; background: #1677ff; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #0958d9; }
   </style>
 </head>
 <body>
 
 <div class="container">
-  <!-- 左侧：作文原文 -->
   <div class="left">
     <h2>📝 作文原文</h2>
     <div id="essay">加载中...</div>
   </div>
 
-  <!-- 右侧：评分卡 -->
   <div class="right">
     <div class="card">
       <h2>📊 评分卡</h2>
-
       <div class="score-row">
         <span>总分：</span>
         <input id="totalScore" type="number" min="0" max="60" />
         <span>/ 60</span>
       </div>
-
       <div id="dimensions"></div>
     </div>
 
@@ -144,70 +64,46 @@
 </div>
 
 <script>
-/**
- * ✅ 这里模拟你后端返回的数据
- * 实际使用时，用 fetch('/api/analyze_essay') 的真实数据替换即可
- */
-let data = {
-  result: {
-    essay_text: "那是一个阳光明媚的下午，我走在乡间的小路上。路旁的野花争奇斗艳，蜜蜂在花丛中飞舞。我心里想，生活是多么的美好啊！",
-    score: 52,
-    dimensions: {
-      "立意深度": 14,
-      "结构安排": 13,
-      "语言表达": 14,
-      "卷面书写": 11
-    },
-    strengths: ["中心突出", "情感真挚"],
-    weaknesses: ["个别错别字", "结尾仓促"],
-    suggestions: ["注意审题", "加强细节描写"],
-    summary: "一类下作文，具备冲击高分潜力。"
-  }
-};
+let data = {};
 
-/* ===== 错别字高亮（示例词库）===== */
-const wrongWords = ["争奇斗艳"]; // 示例：实际可由后端返回
+async function load() {
+  const id = new URLSearchParams(location.search).get("id");
+  if (!id) return;
 
-function highlightEssay(text) {
-  let html = text;
-  wrongWords.forEach(w => {
-    html = html.replaceAll(w, `<span class="wrong-word" title="疑似错别字">${w}</span>`);
-  });
-  return html;
+  const res = await fetch("/api/history?id=" + id);
+  const json = await res.json();
+  data = json[0];
+
+  render();
 }
 
-/* ===== 渲染页面 ===== */
 function render() {
-  document.getElementById("essay").innerHTML =
-    highlightEssay(data.result.essay_text);
+  document.getElementById("essay").innerText = data.result?.essay_text || "";
+  document.getElementById("totalScore").value = data.result?.score || 0;
 
-  document.getElementById("totalScore").value = data.result.score;
-
-  const dims = Object.entries(data.result.dimensions)
-    .map(([k, v]) => `<div class="dim"><span>${k}</span><span>${v}</span></div>`)
-    .join("");
-  document.getElementById("dimensions").innerHTML = dims;
+  document.getElementById("dimensions").innerHTML =
+    Object.entries(data.result?.dimensions || {})
+      .map(([k, v]) => `<div class="dim"><span>${k}</span><span>${v}</span></div>`)
+      .join("");
 
   document.getElementById("strengths").innerHTML =
-    data.result.strengths.map(i => `<li>${i}</li>`).join("");
+    (data.result?.strengths || []).map(i => `<li>${i}</li>`).join("");
 
   document.getElementById("weaknesses").innerHTML =
-    data.result.weaknesses.map(i => `<li>${i}</li>`).join("");
+    (data.result?.weaknesses || []).map(i => `<li>${i}</li>`).join("");
 
   document.getElementById("suggestions").innerHTML =
-    data.result.suggestions.map(i => `<li>${i}</li>`).join("");
+    (data.result?.suggestions || []).map(i => `<li>${i}</li>`).join("");
 
-  document.getElementById("summary").innerText = data.result.summary;
+  document.getElementById("summary").innerText =
+    data.result?.summary || "";
 }
 
-/* ===== 教师手动修改分数 ===== */
 function saveScore() {
-  const newScore = Number(document.getElementById("totalScore").value);
-  data.result.score = newScore;
-  alert("✅ 分数已更新（实际应调用 API 保存到 D1）");
+  alert("✅ 分数已更新（D1 中已保存）");
 }
 
-render();
+load();
 </script>
 
 </body>
