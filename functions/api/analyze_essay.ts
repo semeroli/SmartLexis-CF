@@ -25,6 +25,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       });
     }
 
+    // ✅ 官方标准 message 结构
     const contentParts: any[] = [
       {
         type: "text",
@@ -40,7 +41,9 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
     for (const imgBase64 of essayImages) {
       contentParts.push({
         type: "image_url",
-        image_url: { url: imgBase64 },
+        image_url: {
+          url: imgBase64, // ✅ 必须是 data:image/jpeg;base64,xxxx
+        },
       });
     }
 
@@ -54,13 +57,14 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "Qwen/Qwen2.5-VL-72B-Instruct", // ✅ 唯一必改点
+        model: "Qwen/Qwen3-VL-8B-Instruct", // ✅ 官方示例模型
         messages: [
           { role: "system", content: "你是资深语文阅卷老师。" },
           { role: "user", content: contentParts },
         ],
         temperature: 0.7,
         max_tokens: 3000,
+        stream: false, // ✅ Cloudflare 建议关 stream
       }),
       signal: controller.signal,
     });
@@ -78,6 +82,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
 
     const analysis = data?.choices?.[0]?.message?.content ?? "阅卷失败";
 
+    // ✅ D1 存储（完全不变）
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_records (
         id TEXT PRIMARY KEY,
