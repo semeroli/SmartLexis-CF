@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Users, UserCircle, BookOpen, PenTool, Sparkles,
-  TrendingUp, Award, AlertCircle, CheckCircle2,
-  Search, Filter, Download, Upload, LogOut,
+import { 
+  Users, UserCircle, BookOpen, PenTool, Sparkles, 
+  TrendingUp, Award, AlertCircle, CheckCircle2, 
+  Search, Filter, Download, Upload, LogOut, 
   ChevronRight, BrainCircuit, Target, FileText,
   Loader2, ImageIcon, History, Square, ArrowRight,
   BarChart3, Activity, Volume2, Edit3, Trash2,
@@ -1157,7 +1157,6 @@ export default function App() {
   }} />;
 
   if (view === 'admin') return <AdminDashboard onLogout={handleLogout} />;
-
   return (
     <div className="min-h-screen bg-[#FDFDFD] text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       {/* Mobile Top Bar */}
@@ -1460,57 +1459,30 @@ export default function App() {
                           {essayImages.map((img, idx) => (
                             <motion.div key={idx} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="relative aspect-[3/4] rounded-[24px] overflow-hidden border border-slate-200 group shadow-lg">
                               <img src={img} alt="Essay" className="w-full h-full object-cover" />
-                              <button onClick={() =>
-
-setEssayImages(prev => prev.filter((_, i) => i !== idx))}
-  className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"
->
-  <AlertCircle className="w-4 h-4" />
-</button>
+                              <button onClick={() => setEssayImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"><AlertCircle className="w-4 h-4" /></button>
                             </motion.div>
                           ))}
                           {essayImages.length < 5 && (
                             <label className="aspect-[3/4] rounded-[24px] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-emerald-400 hover:bg-emerald-50 transition-all group">
                               <ImageIcon className="w-10 h-10 text-slate-300 group-hover:text-emerald-400 transition-colors" />
                               <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">添加图片</span>
-                              {/* ✅ 关键：文件选择 */}
-                              <input
-                                type="file"
-                                accept="image/*"
-                                multiple
-                                className="hidden"
-                                onChange={handleEssayImageUpload}
-                              />
+                              <input type="file" accept="image/*" multiple className="hidden" onChange={handleEssayImageUpload} />
                             </label>
                           )}
                         </div>
                       </div>
 
-                      {/* ✅ 提交批改按钮 */}
-                      <button
-                        onClick={analyzeEssay}
-                        disabled={isAnalyzingEssay || essayImages.length < 1 || !essayTitle.trim()}
-                        className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none"
-                      >
-                        {isAnalyzingEssay ? (
-                          <Loader2 className="w-6 h-6 animate-spin" />
-                        ) : (
-                          <Sparkles className="w-6 h-6" />
-                        )}
+                      <button onClick={analyzeEssay} disabled={isAnalyzingEssay || essayImages.length < 1 || !essayTitle.trim()} className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none">
+                        {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
                         {isAnalyzingEssay ? "AI 正在深度阅卷..." : "开始深度诊断"}
                       </button>
                     </div>
 
-                    {/* ✅ AI 分析结果 */}
                     <div className="bg-white rounded-[32px] border border-slate-100 p-8 min-h-[450px] flex flex-col shadow-inner overflow-hidden">
                       {isAnalyzingEssay ? (
                         <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
-                          <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce">
-                            <Sparkles className="w-10 h-10 text-emerald-600" />
-                          </div>
-                          <p className="text-lg text-slate-500 font-black animate-pulse">
-                            AI 正在阅读并分析您的作文...
-                          </p>
+                          <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce"><Sparkles className="w-10 h-10 text-emerald-600" /></div>
+                          <p className="text-lg text-slate-500 font-black animate-pulse">AI 正在阅读并分析您的作文...</p>
                         </div>
                       ) : essayAnalysis ? (
                         <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar prose prose-sm prose-indigo max-w-none prose-p:leading-relaxed">
@@ -1519,9 +1491,7 @@ setEssayImages(prev => prev.filter((_, i) => i !== idx))}
                       ) : (
                         <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 opacity-30">
                           <FileText className="w-20 h-20 text-slate-300" />
-                          <p className="text-base text-slate-400 font-black">
-                            暂无分析报告，请先提交作文
-                          </p>
+                          <p className="text-base text-slate-400 font-black">暂无分析报告，请先提交作文</p>
                         </div>
                       )}
                     </div>
@@ -1535,11 +1505,7 @@ setEssayImages(prev => prev.filter((_, i) => i !== idx))}
                       <div className="w-12 h-12 bg-indigo-100 rounded-[20px] flex items-center justify-center"><BrainCircuit className="w-6 h-6 text-indigo-600" /></div>
                       <div><h3 className="text-xl font-bold text-slate-900">智能学习处方</h3><p className="text-xs text-slate-500 font-bold">基于大模型的个性化提升建议</p></div>
                     </div>
-                    <button 
-                      onClick={() => generateAIAnalysis(selectedStudent)} 
-                      disabled={isGenerating}
-                      className="px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50"
-                    >
+                    <button onClick={() => generateAIAnalysis(selectedStudent)} disabled={isGenerating} className="px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50">
                       {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Target className="w-5 h-5" />}
                       {isGenerating ? "生成中..." : "生成处方"}
                     </button>
@@ -1559,11 +1525,7 @@ setEssayImages(prev => prev.filter((_, i) => i !== idx))}
               {/* Action Area */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <Card title="🚀 专项提分练习" subtitle="巩固薄弱知识点" delay={0.3}>
-                  <button 
-                    onClick={fetchPractice} 
-                    disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")}
-                    className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50"
-                  >
+                  <button onClick={fetchPractice} disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
                     {isActionLoading && activeAction === 'practice' ? <Loader2 className="w-6 h-6 animate-spin" /> : <BookOpen className="w-6 h-6" />}
                     开始专项练习
                   </button>
@@ -1571,11 +1533,7 @@ setEssayImages(prev => prev.filter((_, i) => i !== idx))}
                 </Card>
 
                 <Card title="📖 范文升格赏析" subtitle="AI 生成升格范文与金句" delay={0.4}>
-                  <button 
-                    onClick={fetchUpgradedEssay} 
-                    disabled={isActionLoading || !essayAnalysis}
-                    className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50"
-                  >
+                  <button onClick={fetchUpgradedEssay} disabled={isActionLoading || !essayAnalysis} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
                     {isActionLoading && activeAction === 'essay' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
                     生成升格范文
                   </button>
@@ -1583,11 +1541,7 @@ setEssayImages(prev => prev.filter((_, i) => i !== idx))}
                     <div className="mt-8 space-y-6">
                       <div className="flex items-center justify-between">
                         <h4 className="text-lg font-bold text-slate-900">升格范文</h4>
-                        <button 
-                          onClick={() => playTTS(actionContent)} 
-                          disabled={isTTSLoading}
-                          className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all"
-                        >
+                        <button onClick={() => playTTS(actionContent)} disabled={isTTSLoading} className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all">
                           {isPlayingAudio ? <Square className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                           {isTTSLoading ? '生成中...' : isPlayingAudio ? '停止朗读' : '朗读范文'}
                         </button>
@@ -1605,10 +1559,7 @@ setEssayImages(prev => prev.filter((_, i) => i !== idx))}
                                 <p className="text-slate-800 font-serif italic mb-2">"{gs.content}"</p>
                                 <div className="flex justify-between items-center">
                                   <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">{gs.theme}</span>
-                                  <button 
-                                    onClick={() => saveMaterial(gs.content, gs.theme, "AI升格范文")}
-                                    className="text-xs font-bold text-emerald-600 hover:text-emerald-700"
-                                  >
+                                  <button onClick={() => saveMaterial(gs.content, gs.theme, "AI升格范文")} className="text-xs font-bold text-emerald-600 hover:text-emerald-700">
                                     收藏到素材库
                                   </button>
                                 </div>
