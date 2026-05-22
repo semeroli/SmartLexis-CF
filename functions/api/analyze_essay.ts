@@ -1,13 +1,9 @@
-export async function onRequestPost(context) {
+export async function onRequestPost(context: any) {
   const { request, env } = context;
 
   try {
-    // 1️⃣ 检查 API Key
     if (!env.MODELSCOPE_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }), { status: 500 });
     }
 
     const formData = await request.formData();
@@ -17,15 +13,11 @@ export async function onRequestPost(context) {
     const imagesJson = formData.get("images");
 
     if (!imagesJson) {
-      return new Response(JSON.stringify({ error: "缺少作文图片" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(JSON.stringify({ error: "缺少作文图片" }), { status: 400 });
     }
 
     const essayImages = JSON.parse(imagesJson as string);
 
-    // 2️⃣ 构造多模态内容（✅ 修复图片格式）
     const contentParts = [
       {
         type: "text",
@@ -39,7 +31,6 @@ export async function onRequestPost(context) {
     ];
 
     for (let img of essayImages) {
-      // ✅ 关键修复：确保是完整 Data URI
       if (!img.startsWith("data:image/")) {
         img = `data:image/jpeg;base64,${img}`;
       }
@@ -49,7 +40,6 @@ export async function onRequestPost(context) {
       });
     }
 
-    // 3️⃣ 调用 ModelScope（Qwen3-VL）
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60000);
 
@@ -98,13 +88,9 @@ export async function onRequestPost(context) {
     const data = await res.json();
 
     if (!res.ok) {
-      return new Response(
-        JSON.stringify({ error: "ModelScope API error", detail: data }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "ModelScope API error", detail: data }), { status: 500 });
     }
 
-    // 4️⃣ 解析 JSON
     let raw = data.choices[0].message.content
       .replace(/^```json/, "")
       .replace(/```$/, "")
@@ -126,7 +112,6 @@ export async function onRequestPost(context) {
       };
     }
 
-    // 5️⃣ ✅ 写入 D1（完全保留你原来的表结构）
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_records (
         id TEXT PRIMARY KEY,
@@ -158,7 +143,6 @@ export async function onRequestPost(context) {
       )
       .run();
 
-    // 6️⃣ 返回给前端
     return new Response(
       JSON.stringify({
         success: true,
@@ -171,14 +155,8 @@ export async function onRequestPost(context) {
     );
   } catch (err: any) {
     if (err.name === "AbortError") {
-      return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), {
-        status: 504,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), { status: 504 });
     }
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
   }
 }
