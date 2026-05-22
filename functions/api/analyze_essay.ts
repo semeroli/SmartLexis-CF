@@ -15,7 +15,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       );
     }
 
-    const essayImages = JSON.parse(imagesJson as string);
+    const essayImages: string[] = JSON.parse(imagesJson as string);
     const apiKey = env.MODELSCOPE_API_KEY;
 
     if (!apiKey) {
@@ -25,8 +25,12 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       );
     }
 
-    const parts: any[] = [
+    /* ===============================
+     * 1️⃣ 构造 Qwen‑VL 多模态 content
+     * =============================== */
+    const contentParts: any[] = [
       {
+        type: "text",
         text: `你是一位资深的语文阅卷组组长。请对这篇题目为《${title}》的学生手写作文进行深度诊断。
 要求：
 1. 识别图片中的文字内容（如果清晰）。
@@ -37,15 +41,20 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
     ];
 
     for (const imgBase64 of essayImages) {
-      const base64Data = imgBase64.split(",")[1];
-      const mimeType = imgBase64.split(",")[0].split(":")[1].split(";")[0];
-      parts.push({
-        inlineData: {
-          data: base64Data,
-          mimeType: mimeType,
+      // ✅ Qwen‑VL 必须传完整 Data URI
+      contentParts.push({
+        type: "image_url",
+        image_url: {
+          url: imgBase64,
         },
       });
     }
+
+    /* ===============================
+     * 2️⃣ 调用 ModelScope Qwen‑VL
+     * =============================== */
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 55000);
 
     const res = await fetch("https://api-inference.modelscope.cn/v1/chat/completions", {
       method: "POST",
@@ -54,16 +63,18 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "ZhipuAI/GLM-5.1", // ✅ 更换为魔塔 GLM-5.1
+        model: "Qwen/Qwen-VL-Chat", // ✅ 关键：换为 Qwen‑VL
         messages: [
           { role: "system", content: "你是资深语文阅卷老师。" },
-          { role: "user", content: parts.map(p => p.text || "[图片]").join("\n") },
+          { role: "user", content: contentParts },
         ],
         temperature: 0.7,
         max_tokens: 3000,
       }),
+      signal: controller.signal,
     });
 
+    clearTimeout(timeout);
     const data = await res.json();
 
     if (!res.ok) {
@@ -77,7 +88,9 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
     const analysis =
       data?.choices?.[0]?.message?.content ?? "阅卷失败";
 
-    // 确保表存在
+    /* ===============================
+     * 3️⃣ D1 表结构（完全保留你的逻辑）
+     * =============================== */
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_records (
         id TEXT PRIMARY KEY,
@@ -89,7 +102,6 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       )`
     ).run();
 
-    // 检查并修复表结构
     const tableInfo = await env.DB.prepare("PRAGMA table_info(writing_records)").all();
     const columns = tableInfo.results.map((column: any) => column.name);
 
@@ -112,7 +124,6 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
     const id = crypto.randomUUID();
     const date = new Date().toISOString();
 
-    // 保存到 D1
     await env.DB.prepare(
       "INSERT INTO writing_records (id, studentId, teacherId, title, analysis, date) VALUES (?, ?, ?, ?, ?, ?)"
     )
@@ -123,7 +134,14 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string; DB: D1Da
       JSON.stringify({ id, title, analysis, date }),
       { headers: { "Content-Type": "application/json" } }
     );
+
   } catch (err: any) {
+    if (err.name === "AbortError") {
+      return new Response(
+        JSON.stringify({ error: "阅卷超时，请稍后重试" }),
+        { status: 504, headers: { "Content-Type": "application/json" } }
+      );
+    }
     return new Response(
       JSON.stringify({ error: err.message }),
       { status: 500, headers: { "Content-Type": "application/json" } }
