@@ -1614,7 +1614,7 @@ export default function App() {
               exit={{ opacity: 0, x: 20 }}
               className="space-y-10"
             >
-              {/* 教师看板内容（你原来的内容原样放回） */}
+              {/* 教师看板内容（原样放回） */}
             </motion.div>
           ) : (
             <motion.div
@@ -1624,7 +1624,7 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-10"
             >
-              {/* 学生诊断内容（你原来的内容原样放回） */}
+              {/* 学生诊断内容（原样放回） */}
             </motion.div>
           )}
         </AnimatePresence>
