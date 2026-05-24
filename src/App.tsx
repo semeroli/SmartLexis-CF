@@ -1628,6 +1628,31 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
+      {/* Main Content */}
+      <main className="lg:ml-64 p-6 md:p-12 pt-24 lg:pt-12 max-w-7xl mx-auto pb-32 lg:pb-12">
+        <AnimatePresence mode="wait">
+          {view === 'teacher' ? (
+            <motion.div
+              key="teacher"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="space-y-10"
+            >
+              {/* 教师看板内容（你原来的内容原样放回） */}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="student"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-10"
+            >
+              {/* 学生诊断内容（你原来的内容原样放回） */}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* Edit Modal */}
