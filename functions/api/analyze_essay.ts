@@ -1,9 +1,12 @@
-export async function onRequestPost(context: any) {
+export async function onRequestPost(context) {
   const { request, env } = context;
 
   try {
     if (!env.MODELSCOPE_API_KEY) {
-      return new Response(JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }), { status: 500 });
+      return new Response(
+        JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const formData = await request.formData();
@@ -13,10 +16,16 @@ export async function onRequestPost(context: any) {
     const imagesJson = formData.get("images");
 
     if (!imagesJson) {
-      return new Response(JSON.stringify({ error: "缺少作文图片" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "缺少作文图片" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     const essayImages = JSON.parse(imagesJson as string);
+
+    // ✅【修复 1】限制最多 2 张图（中学生作文足够）
+    const safeImages = essayImages.slice(0, 2);
 
     const contentParts = [
       {
@@ -30,7 +39,7 @@ export async function onRequestPost(context: any) {
       },
     ];
 
-    for (let img of essayImages) {
+    for (let img of safeImages) {
       if (!img.startsWith("data:image/")) {
         img = `data:image/jpeg;base64,${img}`;
       }
@@ -40,6 +49,7 @@ export async function onRequestPost(context: any) {
       });
     }
 
+    // ✅【修复 2】强制 keepalive + CF 友好头
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60000);
 
@@ -48,6 +58,7 @@ export async function onRequestPost(context: any) {
       headers: {
         Authorization: `Bearer ${env.MODELSCOPE_API_KEY}`,
         "Content-Type": "application/json",
+        "Connection": "keep-alive",
       },
       body: JSON.stringify({
         model: "Qwen/Qwen3-VL-8B-Instruct",
@@ -82,19 +93,23 @@ export async function onRequestPost(context: any) {
         stream: false,
       }),
       signal: controller.signal,
+      keepalive: true,
     });
 
     clearTimeout(timeout);
-    const data = await res.json();
 
     if (!res.ok) {
-      return new Response(JSON.stringify({ error: "ModelScope API error", detail: data }), { status: 500 });
+      return new Response(
+        JSON.stringify({ error: "ModelScope API error" }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      );
     }
 
-    let raw = data.choices[0].message.content
-      .replace(/^```json/, "")
-      .replace(/```$/, "")
-      .trim();
+    const data = await res.json();
+
+    // ✅【修复 3】更强的 JSON 容错
+    let raw = data.choices?.[0]?.message?.content || "";
+    raw = raw.replace(/^```json/, "").replace(/```$/, "").trim();
 
     let result;
     try {
@@ -107,23 +122,12 @@ export async function onRequestPost(context: any) {
         strengths: [],
         weaknesses: [],
         suggestions: [],
-        summary: "解析失败",
+        summary: "AI 返回格式异常",
         raw,
       };
     }
 
-    await env.DB.prepare(
-      `CREATE TABLE IF NOT EXISTS writing_records (
-        id TEXT PRIMARY KEY,
-        studentId TEXT,
-        teacherId TEXT,
-        title TEXT,
-        essay_text TEXT,
-        analysis_json TEXT,
-        date DATETIME
-      )`
-    ).run();
-
+    // ✅ D1 不再建表（前提：你已在 Dashboard 建好）
     const id = crypto.randomUUID();
     const date = new Date().toISOString();
 
@@ -144,19 +148,20 @@ export async function onRequestPost(context: any) {
       .run();
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        id,
-        title,
-        result,
-        date,
-      }),
+      JSON.stringify({ success: true, id, title, result, date }),
       { headers: { "Content-Type": "application/json" } }
     );
+
   } catch (err: any) {
     if (err.name === "AbortError") {
-      return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), { status: 504 });
+      return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), {
+        status: 504,
+        headers: { "Content-Type": "application/json" },
+      });
     }
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
