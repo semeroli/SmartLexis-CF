@@ -823,7 +823,7 @@ export default function App() {
     const patterns = [
       /【升格范文】([\s\S]*?)(?=【亮点解析】|【亮点赏析】|【|$)/,
       /(?:^|\n)升格范文(?:$|\n)([\s\S]*?)(?=(?:^|\n)亮点解析|$)/m,
-      /范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/
+      /范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/)
     ];
 
     let found = false;
@@ -936,7 +936,7 @@ export default function App() {
       const patterns = [
         /【升格范文】([\s\S]*?)(?=【亮点解析】|【亮点赏析】|【|$)/,
         /(?:^|\n)升格范文(?:$|\n)([\s\S]*?)(?=(?:^|\n)亮点解析|$)/m,
-        /范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/
+        /范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/)
       ];
 
       let found = false;
@@ -1603,8 +1603,8 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
-      
       </main>
+
       {/* Edit Modal */}
       <AnimatePresence>
         {isEditModalOpen && editingStudent && (
