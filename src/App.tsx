@@ -1603,97 +1603,50 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
-      {/* Main Content */}
-      <main className="lg:ml-64 p-6 md:p-12 pt-24 lg:pt-12 max-w-7xl mx-auto pb-32 lg:pb-12">
-        <AnimatePresence mode="wait">
-          {view === 'teacher' ? (
-            <motion.div
-              key="teacher"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              className="space-y-10"
-            >
-              {/* 教师看板内容（原样放回） */}
-            </motion.div>
-          ) : (
-            <motion.div
-              key="student"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-10"
-            >
-              {/* 学生诊断内容（原样放回） */}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      {/* Main Content */}
-      <main className="lg:ml-64 p-6 md:p-12 pt-24 lg:pt-12 max-w-7xl mx-auto pb-32 lg:pb-12">
-        <AnimatePresence mode="wait">
-          {view === 'teacher' ? (
-            <motion.div
-              key="teacher"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 20 }}
-              className="space-y-10"
-            >
-              {/* 教师看板内容（你原来的内容原样放回） */}
-            </motion.div>
-          ) : (
-            <motion.div
-              key="student"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-10"
-            >
-              {/* 学生诊断内容（你原来的内容原样放回） */}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </main>
+</motion.div>
+            )}
+          </AnimatePresence>
+        </main>
 
-      {/* Edit Modal */}
-      <AnimatePresence>
-        {isEditModalOpen && editingStudent && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
-            onClick={() => setIsEditModalOpen(false)}
-          >
+        {/* Edit Modal */}
+        <AnimatePresence>
+          {isEditModalOpen && editingStudent && (
             <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-[32px] p-10 w-full max-w-2xl shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+              onClick={() => setIsEditModalOpen(false)}
             >
-              <h3 className="text-2xl font-black text-slate-900 mb-8">编辑学生成绩</h3>
-              <div className="grid grid-cols-2 gap-6">
-                {['choice', 'modernReading', 'classicReading', 'nonLinear', 'dictation', 'composition'].map(key => (
-                  <div key={key}>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">{key}</label>
-                    <input
-                      type="number"
-                      value={(editingStudent as any)[key] || 0}
-                      onChange={(e) => setEditingStudent({...editingStudent, [key]: parseInt(e.target.value) || 0})}
-                      className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-500/10"
-                    />
-                  </div>
-                ))}
-              </div>
-              <div className="flex justify-end gap-4 mt-10">
-                <button onClick={() => setIsEditModalOpen(false)} className="px-8 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black hover:bg-slate-200 transition-all">取消</button>
-                <button onClick={() => handleSaveStudent(editingStudent)} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 transition-all">保存</button>
-              </div>
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="bg-white rounded-[32px] p-10 w-full max-w-2xl shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h3 className="text-2xl font-black text-slate-900 mb-8">编辑学生成绩</h3>
+                <div className="grid grid-cols-2 gap-6">
+                  {['choice', 'modernReading', 'classicReading', 'nonLinear', 'dictation', 'composition'].map(key => (
+                    <div key={key}>
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">{key}</label>
+                      <input
+                        type="number"
+                        value={(editingStudent as any)[key] || 0}
+                        onChange={(e) => setEditingStudent({...editingStudent, [key]: parseInt(e.target.value) || 0})}
+                        className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-500/10"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-4 mt-10">
+                  <button onClick={() => setIsEditModalOpen(false)} className="px-8 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black hover:bg-slate-200 transition-all">取消</button>
+                  <button onClick={() => handleSaveStudent(editingStudent)} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 transition-all">保存</button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
+          )}
+        </AnimatePresence>
+      </div>
+    );
 }
