@@ -1600,10 +1600,7 @@ export default function App() {
                   <GrowthCurve history={scoreHistory} />
                 </Card>
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-</motion.div>
+           </motion.div>
             )}
           </AnimatePresence>
         </main>
