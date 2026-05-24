@@ -1418,166 +1418,163 @@ export default function App() {
 
               <div id="student-report" className="space-y-10">
                 <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-8">
-                {/* AI Writing - Bento Large */}
-                <Card className="md:col-span-3 lg:col-span-3 bg-emerald-50/30 border-emerald-100/50" delay={0.1}>
-                  <div className="flex items-center justify-between mb-10">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-emerald-100 rounded-[20px] flex items-center justify-center"><PenTool className="w-6 h-6 text-emerald-600" /></div>
-                      <div><h3 className="text-xl font-bold text-slate-900">AI 作文深度诊断</h3><p className="text-xs text-slate-500 font-bold">多维度自动阅卷与修改建议</p></div>
-                    </div>
-                    {essayAnalysis && <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest"><History className="w-4 h-4" /> {new Date(essayAnalysis.date).toLocaleDateString()}</div>}
-                  </div>
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-                    <div className="space-y-8">
-                      <div className="space-y-6">
-                        <div className="relative">
-                          <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 block ml-1">作文题目 / Essay Title</label>
-                          <input type="text" placeholder="请输入作文题目..." className="w-full px-6 py-4 bg-white border border-slate-200 rounded-[24px] text-sm font-bold outline-none focus:ring-8 focus:ring-emerald-500/5 focus:border-emerald-500 transition-all shadow-sm" value={essayTitle} onChange={(e) => setEssayTitle(e.target.value)} />
-                        </div>
-                        <div className="grid grid-cols-3 gap-4">
-                          {essayImages.map((img, idx) => (
-                            <motion.div key={idx} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="relative aspect-[3/4] rounded-[24px] overflow-hidden border border-slate-200 group shadow-lg">
-                              <img src={img} alt="Essay" className="w-full h-full object-cover" />
-                              <button onClick={() => setEssayImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"><AlertCircle className="w-4 h-4" /></button>
-                            </motion.div>
-                          ))}
-                          {essayImages.length < 5 && (
-                            <label className="aspect-[3/4] rounded-[24px] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-emerald-400 hover:bg-emerald-50 transition-all group">
-                              <ImageIcon className="w-10 h-10 text-slate-300 group-hover:text-emerald-400 transition-colors" />
-                              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">添加图片</span>
-                              <input type="file" accept="image/*" multiple className="hidden" onChange={handleEssayImageUpload} />
-                            </label>
-                          )}
-                        </div>
+                  <Card className="md:col-span-3 lg:col-span-3 bg-emerald-50/30 border-emerald-100/50" delay={0.1}>
+                    <div className="flex items-center justify-between mb-10">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-emerald-100 rounded-[20px] flex items-center justify-center"><PenTool className="w-6 h-6 text-emerald-600" /></div>
+                        <div><h3 className="text-xl font-bold text-slate-900">AI 作文深度诊断</h3><p className="text-xs text-slate-500 font-bold">多维度自动阅卷与修改建议</p></div>
                       </div>
-
-                      <button onClick={analyzeEssay} disabled={isAnalyzingEssay || essayImages.length < 1 || !essayTitle.trim()} className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none">
-                        {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
-                        {isAnalyzingEssay ? "AI 正在深度阅卷..." : "开始深度诊断"}
-                      </button>
+                      {essayAnalysis && <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest"><History className="w-4 h-4" /> {new Date(essayAnalysis.date).toLocaleDateString()}</div>}
                     </div>
-
-                    <div className="bg-white rounded-[32px] border border-slate-100 p-8 min-h-[450px] flex flex-col shadow-inner overflow-hidden">
-                      {isAnalyzingEssay ? (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
-                          <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce"><Sparkles className="w-10 h-10 text-emerald-600" /></div>
-                          <p className="text-lg text-slate-500 font-black animate-pulse">AI 正在阅读并分析您的作文...</p>
-                        </div>
-                      ) : essayAnalysis ? (
-                        <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar prose prose-sm prose-indigo max-w-none prose-p:leading-relaxed">
-                          <ReactMarkdown>{essayAnalysis.analysis}</ReactMarkdown>
-                        </div>
-                      ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 opacity-30">
-                          <FileText className="w-20 h-20 text-slate-300" />
-                          <p className="text-base text-slate-400 font-black">暂无分析报告，请先提交作文</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </Card>
-
-                {/* AI Prescription */}
-                <Card className="bg-indigo-50/30 border-indigo-100/50" delay={0.2}>
-                  <div className="flex items-center justify-between mb-8">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-12 bg-indigo-100 rounded-[20px] flex items-center justify-center"><BrainCircuit className="w-6 h-6 text-indigo-600" /></div>
-                      <div><h3 className="text-xl font-bold text-slate-900">智能学习处方</h3><p className="text-xs text-slate-500 font-bold">基于大模型的个性化提升建议</p></div>
-                    </div>
-                    <button onClick={() => generateAIAnalysis(selectedStudent)} disabled={isGenerating} className="px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50">
-                      {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Target className="w-5 h-5" />}
-                      {isGenerating ? "生成中..." : "生成处方"}
-                    </button>
-                  </div>
-                  <div className="prose prose-sm max-w-none text-slate-700 leading-loose min-h-[120px]">
-                    {isGenerating ? (
-                      <div className="flex items-center justify-center py-10"><Loader2 className="w-8 h-8 animate-spin text-indigo-500" /></div>
-                    ) : aiPrescription ? (
-                      <ReactMarkdown>{aiPrescription}</ReactMarkdown>
-                    ) : (
-                      <p className="text-slate-400 italic">点击右上角按钮，让 AI 为您生成专属学习处方。</p>
-                    )}
-                  </div>
-                </Card>
-              </div>
-
-              {/* Action Area */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                <Card title="🚀 专项提分练习" subtitle="巩固薄弱知识点" delay={0.3}>
-                  <button onClick={fetchPractice} disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
-                    {isActionLoading && activeAction === 'practice' ? <Loader2 className="w-6 h-6 animate-spin" /> : <BookOpen className="w-6 h-6" />}
-                    开始专项练习
-                  </button>
-                  {practiceData && <InteractivePractice data={practiceData} />}
-                </Card>
-
-                <Card title="📖 范文升格赏析" subtitle="AI 生成升格范文与金句" delay={0.4}>
-                  <button onClick={fetchUpgradedEssay} disabled={isActionLoading || !essayAnalysis} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
-                    {isActionLoading && activeAction === 'essay' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
-                    生成升格范文
-                  </button>
-                  {actionContent && (
-                    <div className="mt-8 space-y-6">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-lg font-bold text-slate-900">升格范文</h4>
-                        <button onClick={() => playTTS(actionContent)} disabled={isTTSLoading} className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all">
-                          {isPlayingAudio ? <Square className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                          {isTTSLoading ? '生成中...' : isPlayingAudio ? '停止朗读' : '朗读范文'}
-                        </button>
-                      </div>
-                      <div className="prose prose-sm max-w-none text-slate-700 leading-loose">
-                        <ReactMarkdown>{actionContent}</ReactMarkdown>
-                      </div>
-                      
-                      {goldenSentences.length > 0 && (
-                        <div className="mt-8">
-                          <h4 className="text-lg font-bold text-slate-900 mb-4">🌟 金句收藏</h4>
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {goldenSentences.map((gs, idx) => (
-                              <div key={idx} className="bg-amber-50 p-5 rounded-2xl border border-amber-100">
-                                <p className="text-slate-800 font-serif italic mb-2">"{gs.content}"</p>
-                                <div className="flex justify-between items-center">
-                                  <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">{gs.theme}</span>
-                                  <button onClick={() => saveMaterial(gs.content, gs.theme, "AI升格范文")} className="text-xs font-bold text-emerald-600 hover:text-emerald-700">
-                                    收藏到素材库
-                                  </button>
-                                </div>
-                              </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                      <div className="space-y-8">
+                        <div className="space-y-6">
+                          <div className="relative">
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 block ml-1">作文题目 / Essay Title</label>
+                            <input type="text" placeholder="请输入作文题目..." className="w-full px-6 py-4 bg-white border border-slate-200 rounded-[24px] text-sm font-bold outline-none focus:ring-8 focus:ring-emerald-500/5 focus:border-emerald-500 transition-all shadow-sm" value={essayTitle} onChange={(e) => setEssayTitle(e.target.value)} />
+                          </div>
+                          <div className="grid grid-cols-3 gap-4">
+                            {essayImages.map((img, idx) => (
+                              <motion.div key={idx} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="relative aspect-[3/4] rounded-[24px] overflow-hidden border border-slate-200 group shadow-lg">
+                                <img src={img} alt="Essay" className="w-full h-full object-cover" />
+                                <button onClick={() => setEssayImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"><AlertCircle className="w-4 h-4" /></button>
+                              </motion.div>
                             ))}
+                            {essayImages.length < 5 && (
+                              <label className="aspect-[3/4] rounded-[24px] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-emerald-400 hover:bg-emerald-50 transition-all group">
+                                <ImageIcon className="w-10 h-10 text-slate-300 group-hover:text-emerald-400 transition-colors" />
+                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">添加图片</span>
+                                <input type="file" accept="image/*" multiple className="hidden" onChange={handleEssayImageUpload} />
+                              </label>
+                            )}
                           </div>
                         </div>
+
+                        <button onClick={analyzeEssay} disabled={isAnalyzingEssay || essayImages.length < 1 || !essayTitle.trim()} className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none">
+                          {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
+                          {isAnalyzingEssay ? "AI 正在深度阅卷..." : "开始深度诊断"}
+                        </button>
+                      </div>
+
+                      <div className="bg-white rounded-[32px] border border-slate-100 p-8 min-h-[450px] flex flex-col shadow-inner overflow-hidden">
+                        {isAnalyzingEssay ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
+                            <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce"><Sparkles className="w-10 h-10 text-emerald-600" /></div>
+                            <p className="text-lg text-slate-500 font-black animate-pulse">AI 正在阅读并分析您的作文...</p>
+                          </div>
+                        ) : essayAnalysis ? (
+                          <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar prose prose-sm prose-indigo max-w-none prose-p:leading-relaxed">
+                            <ReactMarkdown>{essayAnalysis.analysis}</ReactMarkdown>
+                          </div>
+                        ) : (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 opacity-30">
+                            <FileText className="w-20 h-20 text-slate-300" />
+                            <p className="text-base text-slate-400 font-black">暂无分析报告，请先提交作文</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </Card>
+
+                  <Card className="bg-indigo-50/30 border-indigo-100/50" delay={0.2}>
+                    <div className="flex items-center justify-between mb-8">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-indigo-100 rounded-[20px] flex items-center justify-center"><BrainCircuit className="w-6 h-6 text-indigo-600" /></div>
+                        <div><h3 className="text-xl font-bold text-slate-900">智能学习处方</h3><p className="text-xs text-slate-500 font-bold">基于大模型的个性化提升建议</p></div>
+                      </div>
+                      <button onClick={() => generateAIAnalysis(selectedStudent)} disabled={isGenerating} className="px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50">
+                        {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Target className="w-5 h-5" />}
+                        {isGenerating ? "生成中..." : "生成处方"}
+                      </button>
+                    </div>
+                    <div className="prose prose-sm max-w-none text-slate-700 leading-loose min-h-[120px]">
+                      {isGenerating ? (
+                        <div className="flex items-center justify-center py-10"><Loader2 className="w-8 h-8 animate-spin text-indigo-500" /></div>
+                      ) : aiPrescription ? (
+                        <ReactMarkdown>{aiPrescription}</ReactMarkdown>
+                      ) : (
+                        <p className="text-slate-400 italic">点击右上角按钮，让 AI 为您生成专属学习处方。</p>
                       )}
                     </div>
-                  )}
-                </Card>
-              </div>
+                  </Card>
+                </div>
 
-              {/* History & Materials */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                <Card title="📜 历史诊断记录" subtitle="过往作文分析存档" className="lg:col-span-2" delay={0.5}>
-                  <div className="space-y-4">
-                    {analysisHistory.length > 0 ? analysisHistory.map((record, idx) => (
-                      <div key={record.id} className="p-6 bg-slate-50 rounded-2xl border border-slate-100 hover:border-indigo-100 transition-all">
-                        <div className="flex justify-between items-start mb-3">
-                          <h4 className="font-bold text-slate-900">{record.title}</h4>
-                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(record.date).toLocaleDateString()}</span>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  <Card title="🚀 专项提分练习" subtitle="巩固薄弱知识点" delay={0.3}>
+                    <button onClick={fetchPractice} disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
+                      {isActionLoading && activeAction === 'practice' ? <Loader2 className="w-6 h-6 animate-spin" /> : <BookOpen className="w-6 h-6" />}
+                      开始专项练习
+                    </button>
+                    {practiceData && <InteractivePractice data={practiceData} />}
+                  </Card>
+
+                  <Card title="📖 范文升格赏析" subtitle="AI 生成升格范文与金句" delay={0.4}>
+                    <button onClick={fetchUpgradedEssay} disabled={isActionLoading || !essayAnalysis} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
+                      {isActionLoading && activeAction === 'essay' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
+                      生成升格范文
+                    </button>
+                    {actionContent && (
+                      <div className="mt-8 space-y-6">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-lg font-bold text-slate-900">升格范文</h4>
+                          <button onClick={() => playTTS(actionContent)} disabled={isTTSLoading} className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all">
+                            {isPlayingAudio ? <Square className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                            {isTTSLoading ? '生成中...' : isPlayingAudio ? '停止朗读' : '朗读范文'}
+                          </button>
                         </div>
-                        <div className="prose prose-sm max-w-none text-slate-600 leading-relaxed">
-                          <ReactMarkdown>{record.analysis}</ReactMarkdown>
+                        <div className="prose prose-sm max-w-none text-slate-700 leading-loose">
+                          <ReactMarkdown>{actionContent}</ReactMarkdown>
                         </div>
-                      </div>
-                    )) : (
-                      <div className="text-center py-12 text-slate-400">
-                        <History className="w-12 h-12 mx-auto mb-4 opacity-30" />
-                        <p className="font-black">暂无历史记录</p>
+                        
+                        {goldenSentences.length > 0 && (
+                          <div className="mt-8">
+                            <h4 className="text-lg font-bold text-slate-900 mb-4">🌟 金句收藏</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              {goldenSentences.map((gs, idx) => (
+                                <div key={idx} className="bg-amber-50 p-5 rounded-2xl border border-amber-100">
+                                  <p className="text-slate-800 font-serif italic mb-2">"{gs.content}"</p>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-[10px] font-black text-amber-600 uppercase tracking-widest">{gs.theme}</span>
+                                    <button onClick={() => saveMaterial(gs.content, gs.theme, "AI升格范文")} className="text-xs font-bold text-emerald-600 hover:text-emerald-700">
+                                      收藏到素材库
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
-                  </div>
-                </Card>
+                  </Card>
+                </div>
 
-                <Card title="📊 成长曲线" subtitle="历次考试总分趋势" delay={0.6}>
-                  <GrowthCurve history={scoreHistory} />
-                </Card>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  <Card title="📜 历史诊断记录" subtitle="过往作文分析存档" className="lg:col-span-2" delay={0.5}>
+                    <div className="space-y-4">
+                      {analysisHistory.length > 0 ? analysisHistory.map((record, idx) => (
+                        <div key={record.id} className="p-6 bg-slate-50 rounded-2xl border border-slate-100 hover:border-indigo-100 transition-all">
+                          <div className="flex justify-between items-start mb-3">
+                            <h4 className="font-bold text-slate-900">{record.title}</h4>
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(record.date).toLocaleDateString()}</span>
+                          </div>
+                          <div className="prose prose-sm max-w-none text-slate-600 leading-relaxed">
+                            <ReactMarkdown>{record.analysis}</ReactMarkdown>
+                          </div>
+                        </div>
+                      )) : (
+                        <div className="text-center py-12 text-slate-400">
+                          <History className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                          <p className="font-black">暂无历史记录</p>
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+
+                  <Card title="📊 成长曲线" subtitle="历次考试总分趋势" delay={0.6}>
+                    <GrowthCurve history={scoreHistory} />
+                  </Card>
+                </div>
               </div>
             </motion.div>
           )}
