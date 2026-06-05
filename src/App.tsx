@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Users, UserCircle, BookOpen, PenTool, Sparkles, 
-  TrendingUp, Award, AlertCircle, CheckCircle2, 
-  Search, Filter, Download, Upload, LogOut, 
+import {
+  Users, UserCircle, BookOpen, PenTool,
+  TrendingUp, Award, AlertCircle, CheckCircle2,
+  Search, Filter, Download, Upload, LogOut,
   ChevronRight, BrainCircuit, Target, FileText,
   Loader2, ImageIcon, History, Square, ArrowRight,
   BarChart3, Activity, Volume2, Edit3, Trash2,
-  Bookmark, Library, LayoutDashboard, Menu, X
+  Bookmark, Library, LayoutDashboard, Menu, X, Sparkles
 } from 'lucide-react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, 
-  ResponsiveContainer, Cell, RadarChart, PolarGrid, 
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Cell, RadarChart, PolarGrid,
   PolarAngleAxis, PolarRadiusAxis, Radar, Legend,
   LineChart, Line
 } from 'recharts';
@@ -99,7 +99,7 @@ interface WritingMaterial {
 
 // --- UI Components ---
 const Card = ({ title, subtitle, children, className, delay = 0 }: any) => (
-  <motion.div 
+  <motion.div
     initial={{ opacity: 0, y: 20 }}
     animate={{ opacity: 1, y: 0 }}
     transition={{ duration: 0.5, delay }}
@@ -116,7 +116,7 @@ const Card = ({ title, subtitle, children, className, delay = 0 }: any) => (
 );
 
 const StatBox = ({ label, value, subValue, icon: Icon, colorClass, delay = 0 }: any) => (
-  <motion.div 
+  <motion.div
     initial={{ opacity: 0, scale: 0.95 }}
     animate={{ opacity: 1, scale: 1 }}
     transition={{ duration: 0.4, delay }}
@@ -137,7 +137,7 @@ const StatBox = ({ label, value, subValue, icon: Icon, colorClass, delay = 0 }: 
 
 const GrowthCurve = ({ history }: { history: ScoreHistory[] }) => {
   if (!history || history.length === 0) return null;
-  
+
   const data = history.map(h => ({
     date: new Date(h.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }),
     total: h.total,
@@ -152,7 +152,7 @@ const GrowthCurve = ({ history }: { history: ScoreHistory[] }) => {
           <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
           <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
           <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-          <Tooltip 
+          <Tooltip
             contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
           />
           <Legend iconType="circle" wrapperStyle={{ fontSize: 12, paddingTop: 20 }} />
@@ -207,7 +207,7 @@ const InteractivePractice = ({ data }: { data: PracticeData }) => {
                         onClick={() => !showResult && setAnswers(prev => ({ ...prev, [q.id]: optKey }))}
                         className={cn(
                           "px-6 py-4 rounded-2xl text-left text-sm font-medium transition-all border-2",
-                          isSelected 
+                          isSelected
                             ? (showResult ? (isCorrect ? "bg-emerald-50 border-emerald-500 text-emerald-700" : "bg-rose-50 border-rose-500 text-rose-700") : "bg-indigo-50 border-indigo-500 text-indigo-700")
                             : "bg-slate-50 border-transparent text-slate-600 hover:bg-slate-100"
                         )}
@@ -219,7 +219,7 @@ const InteractivePractice = ({ data }: { data: PracticeData }) => {
                 </div>
 
                 <div className="mt-6 flex items-center gap-4">
-                  <button 
+                  <button
                     onClick={() => setShowAnalysis(prev => ({ ...prev, [q.id]: !prev[q.id] }))}
                     className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-2"
                   >
@@ -235,7 +235,7 @@ const InteractivePractice = ({ data }: { data: PracticeData }) => {
 
                 <AnimatePresence>
                   {showAnalysis[q.id] && (
-                    <motion.div 
+                    <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
@@ -285,7 +285,7 @@ const InteractivePractice = ({ data }: { data: PracticeData }) => {
 
 const ClassHeatmap = ({ students }: { students: Student[] }) => {
   if (!students.length) return null;
-  
+
   const types = [
     { label: '选择题', key: 'choice', max: 30 },
     { label: '现代文阅读', key: 'modernReading', max: 35 },
@@ -308,7 +308,7 @@ const ClassHeatmap = ({ students }: { students: Student[] }) => {
           <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
           <XAxis type="number" domain={[0, 100]} hide />
           <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#64748b', fontWeight: 'bold' }} width={80} />
-          <Tooltip 
+          <Tooltip
             cursor={{ fill: '#f8fafc' }}
             contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
             formatter={(value) => [`${value}%`, '掌握率']}
@@ -324,10 +324,10 @@ const ClassHeatmap = ({ students }: { students: Student[] }) => {
   );
 };
 
-const MaterialLibrary = ({ materials, onDelete }: { materials: WritingMaterial[], onDelete: (id: number) => void }) => {
+const MaterialLibrary = ({ materials, onDelete }: { materials: WritingMaterial[]; onDelete: (id: number) => void }) => {
   const [filterTheme, setFilterTheme] = useState('全部');
   const themes = ['全部', ...Array.from(new Set(materials.map(m => m.theme)))];
-  
+
   const filtered = filterTheme === '全部' ? materials : materials.filter(m => m.theme === filterTheme);
 
   return (
@@ -366,7 +366,7 @@ const MaterialLibrary = ({ materials, onDelete }: { materials: WritingMaterial[]
               <span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[10px] font-black uppercase tracking-widest">{m.theme}</span>
               <button onClick={() => onDelete(m.id)} className="p-2 text-slate-300 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"><Trash2 className="w-4 h-4" /></button>
             </div>
-            <p className="text-slate-700 leading-loose font-serif italic text-lg mb-6">“{m.content}”</p>
+            <p className="text-slate-700 leading-loose font-serif italic text-lg mb-6">"{m.content}"</p>
             <div className="flex items-center justify-between text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <span>来源: {m.source_title}</span>
               <span>{new Date(m.created_at).toLocaleDateString()}</span>
@@ -396,7 +396,7 @@ export default function App() {
   const [activeAction, setActiveAction] = useState<'practice' | 'essay' | 'graph' | null>(null);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [actionContent, setActionContent] = useState<string | null>(null);
-  const [goldenSentences, setGoldenSentences] = useState<{content: string, theme: string}[]>([]);
+  const [goldenSentences, setGoldenSentences] = useState<{ content: string; theme: string }[]>([]);
   const [practiceData, setPracticeData] = useState<PracticeData | null>(null);
   const [scoreHistory, setScoreHistory] = useState<ScoreHistory[]>([]);
   const [materials, setMaterials] = useState<WritingMaterial[]>([]);
@@ -434,16 +434,16 @@ export default function App() {
         .then(res => res.ok ? res.json() : [])
         .then(data => {
           if (Array.isArray(data)) {
-            setStudents(data.map(s => ({
+            setStudents(data.map((s: any) => ({
               dbId: s.id,
-              id: s.student_id || 'N/A', 
+              id: s.student_id || 'N/A',
               name: s.name,
-              choice: s.choice || 0, 
-              modernReading: s.modern_reading || 0, 
-              classicReading: s.classic_reading || 0, 
-              nonLinear: s.non_linear || 0, 
-              dictation: s.dictation || 0, 
-              composition: s.composition || 0, 
+              choice: s.choice || 0,
+              modernReading: s.modern_reading || 0,
+              classicReading: s.classic_reading || 0,
+              nonLinear: s.non_linear || 0,
+              dictation: s.dictation || 0,
+              composition: s.composition || 0,
               total: s.total || 0
             })));
           }
@@ -489,7 +489,7 @@ export default function App() {
         audioRef.current = null;
         setIsPlayingAudio(false);
       }
-      
+
       if (user.role === 'teacher') {
         fetchAnalysisHistory(selectedStudentId, user.uid);
         fetchScoreHistory(selectedStudentId);
@@ -510,7 +510,7 @@ export default function App() {
     const tId = teacherId || user?.uid;
     if (!tId) return;
     try {
-      const res = await fetch(`/api/history?studentId=${studentId}&teacherId=${tId}`);
+      const res = await fetch(`/api/history?studentId=${encodeURIComponent(studentId)}&teacherId=${encodeURIComponent(tId)}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setAnalysisHistory(data);
@@ -520,7 +520,7 @@ export default function App() {
 
   const fetchScoreHistory = async (studentId: string) => {
     try {
-      const res = await fetch(`/api/students?student_id=${studentId}&history=true`);
+      const res = await fetch(`/api/students?student_id=${encodeURIComponent(studentId)}&history=true`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setScoreHistory(data);
@@ -530,7 +530,7 @@ export default function App() {
 
   const fetchMaterials = async (studentId: string) => {
     try {
-      const res = await fetch(`/api/materials?student_id=${studentId}`);
+      const res = await fetch(`/api/materials?student_id=${encodeURIComponent(studentId)}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setMaterials(data);
@@ -560,7 +560,7 @@ export default function App() {
 
   const deleteMaterial = async (id: number) => {
     try {
-      const res = await fetch(`/api/materials?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/materials?id=${id}&student_id=${encodeURIComponent(selectedStudentId || '')}`, { method: 'DELETE' });
       if (res.ok) {
         setMaterials(prev => prev.filter(m => m.id !== id));
       }
@@ -570,7 +570,7 @@ export default function App() {
   const exportToPDF = async (elementId: string, filename: string) => {
     const element = document.getElementById(elementId);
     if (!element) return;
-    
+
     try {
       const canvas = await html2canvas(element, { scale: 2 });
       const imgData = canvas.toDataURL('image/png');
@@ -578,7 +578,7 @@ export default function App() {
       const imgProps = pdf.getImageProperties(imgData);
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-      
+
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(filename);
     } catch (err) {
@@ -598,16 +598,16 @@ export default function App() {
       const res = await fetch('/api/students', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           students: [student],
-          teacher_id: user?.uid 
+          teacher_id: user?.uid
         })
       });
       if (res.ok) {
         const r = await fetch(`/api/students?teacher_id=${user?.uid}`);
         const data = await r.json();
         if (Array.isArray(data)) {
-          setStudents(data.map(s => ({
+          setStudents(data.map((s: any) => ({
             dbId: s.id,
             id: s.student_id || 'N/A',
             name: s.name,
@@ -651,20 +651,19 @@ export default function App() {
     }
   };
 
-  // ✅✅✅ 关键修复点：确保图片是完整的 Data URI ✅✅✅
+  // ✅ 修复：图片上传上限与后端对齐（2张）
   const handleEssayImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     Array.from(e.target.files || []).forEach(file => {
       const reader = new FileReader();
       reader.onload = (event) => {
         const result = event.target?.result as string;
-        // 修复：确保始终以完整 data URI 格式传给后端
         if (!result.startsWith("data:image/")) {
           setEssayImages(prev => [...prev, `data:image/jpeg;base64,${result}`]);
         } else {
           setEssayImages(prev => [...prev, result]);
         }
       };
-      reader.readAsDataURL(file); // 必须使用 readAsDataURL
+      reader.readAsDataURL(file);
     });
   };
 
@@ -686,9 +685,9 @@ export default function App() {
       } else {
         throw new Error(data.error || "分析失败");
       }
-    } catch (err: any) { 
+    } catch (err: any) {
       console.error("AI Analysis Error:", err);
-      setAiPrescription("分析失败: " + err.message); 
+      setAiPrescription("分析失败: " + err.message);
     }
     finally { setIsGenerating(false); }
   };
@@ -703,22 +702,22 @@ export default function App() {
       formData.append('studentId', selectedStudent.id || 'N/A');
       formData.append('teacherId', teacherId);
       formData.append('images', JSON.stringify(essayImages));
-      
+
       const res = await fetch('/api/analyze_essay', { method: 'POST', body: formData });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: "阅卷失败 (服务器错误)" }));
         throw new Error(errorData.error || `HTTP ${res.status}`);
       }
-      
+
       const data = await res.json();
       setEssayAnalysis(data);
       setAnalysisHistory(prev => [data, ...prev]);
       setEssayImages([]);
       setEssayTitle('');
-    } catch (err: any) { 
+    } catch (err: any) {
       console.error("Essay Analysis Error:", err);
-      alert("阅卷失败: " + err.message); 
+      alert("阅卷失败: " + err.message);
     }
     finally { setIsAnalyzingEssay(false); }
   };
@@ -737,15 +736,15 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: essayAnalysis.title, content: essayAnalysis.analysis })
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: "生成失败 (服务器错误)" }));
         throw new Error(errorData.error || `HTTP ${res.status}`);
       }
-      
+
       const data = await res.json();
       const text = data.text || "生成失败";
-      
+
       const essayMatch = text.match(/【升格范文】([\s\S]*?)(?=【金句推荐】|【亮点解析】|$)/);
       const goldenMatch = text.match(/【金句推荐】([\s\S]*?)(?=【亮点解析】|【升格范文】|$)/);
       const analysisMatch = text.match(/【亮点解析】([\s\S]*?)(?=【金句推荐】|【升格范文】|$)/);
@@ -757,10 +756,10 @@ export default function App() {
       let displayContent = "";
       if (essayContent) displayContent += `### 升格范文\n\n${essayContent}\n\n`;
       if (analysisContent) displayContent += `### 亮点解析\n\n${analysisContent}`;
-      
+
       if (!displayContent) displayContent = text;
 
-      let sentences: {content: string, theme: string}[] = [];
+      let sentences: { content: string; theme: string }[] = [];
       if (goldenSection) {
         sentences = goldenSection.split('\n')
           .map(line => line.trim())
@@ -776,15 +775,15 @@ export default function App() {
             }
             return null;
           })
-          .filter((s): s is {content: string, theme: string} => s !== null);
+          .filter((s): s is { content: string; theme: string } => s !== null);
       }
-      
+
       setGoldenSentences(sentences);
       setActionContent(displayContent);
       if (essayContent) preGenerateTTS(essayContent);
-    } catch (err: any) { 
+    } catch (err: any) {
       console.error("Upgrade Essay Error:", err);
-      setActionContent("生成失败: " + err.message); 
+      setActionContent("生成失败: " + err.message);
     }
     finally { setIsActionLoading(false); }
   };
@@ -803,21 +802,22 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student: selectedStudent })
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: "生成失败 (服务器错误)" }));
         throw new Error(errorData.error || `HTTP ${res.status}`);
       }
-      
+
       const data = await res.json();
       setPracticeData(data);
-    } catch (err: any) { 
+    } catch (err: any) {
       console.error("Generate Practice Error:", err);
-      alert("生成失败: " + err.message); 
+      alert("生成失败: " + err.message);
     }
     finally { setIsActionLoading(false); }
   };
 
+  // ✅ 预生成 TTS 音频（升格范文）
   const preGenerateTTS = async (text: string) => {
     let textToRead = text;
     const patterns = [
@@ -835,23 +835,23 @@ export default function App() {
         break;
       }
     }
-    
+
     if (!found) {
       const markerIndex = text.indexOf('升格范文');
       if (markerIndex !== -1) {
         textToRead = text.substring(markerIndex + 4).trim();
       }
     }
-    
+
     textToRead = textToRead.replace(/[#*`]/g, '').substring(0, 2000);
-    
+
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: textToRead })
       });
-      
+
       if (res.ok) {
         const data = await res.json();
         if (data.audio) {
@@ -863,64 +863,12 @@ export default function App() {
     }
   };
 
-  const playAudioFromBase64 = (base64: string) => {
-    try {
-      const binaryString = window.atob(base64);
-      const len = binaryString.length;
-      const buffer = new ArrayBuffer(44 + len);
-      const view = new DataView(buffer);
-      const sampleRate = 24000;
-
-      view.setUint32(0, 0x52494646, false);
-      view.setUint32(4, 36 + len, true);
-      view.setUint32(8, 0x57415645, false);
-      view.setUint32(12, 0x666d7420, false);
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, 1, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * 2, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      view.setUint32(36, 0x64617461, false);
-      view.setUint32(40, len, true);
-
-      for (let i = 0; i < len; i++) {
-        view.setUint8(44 + i, binaryString.charCodeAt(i));
-      }
-
-      const blob = new Blob([buffer], { type: 'audio/wav' });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onplay = () => setIsPlayingAudio(true);
-      audio.onerror = (e) => {
-        console.error("Audio playback error:", e);
-        setIsPlayingAudio(false);
-        setIsTTSLoading(false);
-        alert("音频播放失败，请重试");
-      };
-      audio.onended = () => { 
-        setIsPlayingAudio(false); 
-        audioRef.current = null; 
-        URL.revokeObjectURL(url); 
-      };
-      audio.play().catch(err => {
-        console.error("Play error:", err);
-        setIsPlayingAudio(false);
-        setIsTTSLoading(false);
-      });
-    } catch (err) {
-      console.error("Base64 decode error:", err);
-      alert("音频数据解析失败");
-      setIsTTSLoading(false);
-    }
-  };
-
+  // ✅ 新增：浏览器 TTS 降级兜底
   const playTTS = async (text: string, skipExtract = false) => {
     if (isPlayingAudio) {
       if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
       setIsPlayingAudio(false);
+      window.speechSynthesis?.cancel();
       return;
     }
 
@@ -931,7 +879,7 @@ export default function App() {
 
     setIsTTSLoading(true);
     let textToRead = text;
-    
+
     if (!skipExtract) {
       const patterns = [
         /【升格范文】([\s\S]*?)(?=【亮点解析】|【亮点赏析】|【|$)/,
@@ -965,23 +913,105 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: textToRead })
       });
-      
+
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: "播放失败 (服务器错误)" }));
         throw new Error(errorData.error || `HTTP ${res.status}`);
       }
-      
+
       const data = await res.json();
       if (data.audio) {
         playAudioFromBase64(data.audio);
       } else {
         throw new Error("未能生成音频数据");
       }
-    } catch (err: any) { 
-      console.error("TTS Error:", err); 
-      alert(`播放失败: ${err.message}`);
+    } catch (err: any) {
+      console.warn("Gemini TTS 失败，降级使用浏览器朗读:", err.message);
+      // ✅ 降级：使用浏览器原生 SpeechSynthesis
+      try {
+        if (!window.speechSynthesis) throw new Error("浏览器不支持语音合成");
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(textToRead);
+        utterance.lang = 'zh-CN';
+        utterance.rate = 0.9;
+        utterance.pitch = 1.0;
+        utterance.onstart = () => setIsPlayingAudio(true);
+        utterance.onend = () => setIsPlayingAudio(false);
+        utterance.onerror = () => setIsPlayingAudio(false);
+        window.speechSynthesis.speak(utterance);
+      } catch (fallbackErr: any) {
+        console.error("浏览器 TTS 降级也失败:", fallbackErr);
+        alert(`播放失败: ${err.message}`);
+      }
     }
     finally { setIsTTSLoading(false); }
+  };
+
+  // ✅ 使用 AudioContext 解码播放（替代手动 WAV 头）
+  const playAudioFromBase64 = (base64: string) => {
+    try {
+      const binaryString = window.atob(base64);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      // 尝试直接作为 WAV 播放
+      const blob = new Blob([bytes], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onplay = () => setIsPlayingAudio(true);
+      audio.onerror = (e) => {
+        console.error("Audio playback error:", e);
+        setIsPlayingAudio(false);
+        setIsTTSLoading(false);
+        // 如果 WAV 失败，尝试用 AudioContext 解码
+        fallbackPlayWithAudioContext(bytes);
+      };
+      audio.onended = () => {
+        setIsPlayingAudio(false);
+        audioRef.current = null;
+        URL.revokeObjectURL(url);
+      };
+      audio.play().catch(err => {
+        console.error("Play error:", err);
+        setIsPlayingAudio(false);
+        setIsTTSLoading(false);
+        fallbackPlayWithAudioContext(bytes);
+      });
+    } catch (err) {
+      console.error("Base64 decode error:", err);
+      alert("音频数据解析失败");
+      setIsTTSLoading(false);
+    }
+  };
+
+  // ✅ 降级：用 AudioContext 播放 PCM 数据
+  const fallbackPlayWithAudioContext = async (pcmBytes: Uint8Array) => {
+    try {
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      const audioBuffer = audioCtx.createBuffer(1, pcmBytes.length / 2, 24000);
+      const channelData = audioBuffer.getChannelData(0);
+      for (let i = 0; i < channelData.length; i++) {
+        const low = pcmBytes[i * 2];
+        const high = pcmBytes[i * 2 + 1];
+        channelData[i] = (high << 8 | low) / 32768;
+      }
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      source.onended = () => {
+        setIsPlayingAudio(false);
+        audioCtx.close();
+      };
+      source.start();
+      setIsPlayingAudio(true);
+    } catch (err) {
+      console.error("AudioContext fallback failed:", err);
+      setIsPlayingAudio(false);
+    }
   };
 
   const downloadTemplate = () => {
@@ -990,11 +1020,11 @@ export default function App() {
       ["2026001", "张三", 25, 20, 15, 8, 8, 42],
       ["2026002", "李四", 22, 18, 12, 7, 9, 38]
     ];
-    
+
     const ws = XLSX.utils.aoa_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "成绩模板");
-    
+
     XLSX.writeFile(wb, "智语系统_成绩导入模板.xlsx");
   };
 
@@ -1007,41 +1037,41 @@ export default function App() {
       try {
         const data = new Uint8Array(event.target?.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
-        
+
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
-        
+
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
-        
+
         const rows = jsonData.slice(1);
         const newStudents = rows.map(row => {
           if (!row || row.length < 2) return null;
-          
+
           const [id, name, choice, modern, classic, nonLinear, dictation, composition] = row.map(v => v?.toString().trim());
           if (!id || !name) return null;
-          
-          const s = { 
-            id, 
-            name, 
-            choice: parseInt(choice) || 0, 
-            modernReading: parseInt(modern) || 0, 
-            classicReading: parseInt(classic) || 0, 
-            nonLinear: parseInt(nonLinear) || 0, 
-            dictation: parseInt(dictation) || 0, 
-            composition: parseInt(composition) || 0, 
-            total: 0 
+
+          const s = {
+            id,
+            name,
+            choice: parseInt(choice) || 0,
+            modernReading: parseInt(modern) || 0,
+            classicReading: parseInt(classic) || 0,
+            nonLinear: parseInt(nonLinear) || 0,
+            dictation: parseInt(dictation) || 0,
+            composition: parseInt(composition) || 0,
+            total: 0
           };
           s.total = s.choice + s.modernReading + s.classicReading + s.nonLinear + s.dictation + s.composition;
           return s;
         }).filter(Boolean) as Student[];
-        
+
         if (newStudents.length > 0) {
           fetch('/api/students', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
               students: newStudents,
-              teacher_id: user?.uid 
+              teacher_id: user?.uid
             })
           }).then(async res => {
             if (res.ok) {
@@ -1049,7 +1079,7 @@ export default function App() {
                 .then(r => r.json())
                 .then(data => {
                   if (Array.isArray(data)) {
-                    setStudents(data.map(s => ({
+                    setStudents(data.map((s: any) => ({
                       dbId: s.id,
                       id: s.student_id || 'N/A',
                       name: s.name,
@@ -1093,7 +1123,7 @@ export default function App() {
 
   const getScoreDistribution = () => {
     const ranges = [
-      { range: '130+', min: 130, max: 150 },
+      { range: '130+', min: 130, max: 151 },
       { range: '120-130', min: 120, max: 130 },
       { range: '110-120', min: 110, max: 120 },
       { range: '100-110', min: 100, max: 110 },
@@ -1102,7 +1132,7 @@ export default function App() {
     ];
     return ranges.map(r => ({
       range: r.range,
-      count: students.filter(s => s.total >= r.min && s.total < r.max).length + (r.min === 130 ? students.filter(s => s.total === 150).length : 0)
+      count: students.filter(s => s.total >= r.min && s.total < r.max).length
     }));
   };
 
@@ -1157,8 +1187,9 @@ export default function App() {
   }} />;
 
   if (view === 'admin') return <AdminDashboard onLogout={handleLogout} />;
- return (
-    <div className="min-h-screen bg-[#FDFDFD] text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       {/* Mobile Top Bar */}
       <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-slate-100 z-[60] flex items-center justify-between px-6">
         <div className="flex items-center gap-3">
@@ -1176,16 +1207,16 @@ export default function App() {
       <AnimatePresence>
         {isSidebarOpen && (
           <>
-            <motion.div 
-              initial={{ opacity: 0 }} 
-              animate={{ opacity: 1 }} 
-              exit={{ opacity: 0 }} 
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               onClick={() => setIsSidebarOpen(false)}
               className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] lg:hidden"
             />
-            <motion.aside 
-              initial={{ x: '-100%' }} 
-              animate={{ x: 0 }} 
+            <motion.aside
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               className="fixed top-0 left-0 h-full w-72 bg-slate-900 text-white z-[80] flex flex-col p-8 lg:hidden"
@@ -1334,11 +1365,11 @@ export default function App() {
                     <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                       <BarChart data={getScoreDistribution()}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                        <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8', fontWeight: 600}} />
-                        <YAxis axisLine={false} tickLine={false} tick={{fontSize: 12, fill: '#94a3b8', fontWeight: 600}} />
-                        <Tooltip cursor={{fill: '#f8fafc'}} contentStyle={{borderRadius: '24px', border: 'none', boxShadow: '0 20px 50px rgba(0,0,0,0.05)'}} />
+                        <XAxis dataKey="range" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 600 }} />
+                        <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#94a3b8', fontWeight: 600 }} />
+                        <Tooltip cursor={{ fill: '#f8fafc' }} contentStyle={{ borderRadius: '24px', border: 'none', boxShadow: '0 20px 50px rgba(0,0,0,0.05)' }} />
                         <Bar dataKey="count" fill="#6366f1" radius={[12, 12, 0, 0]} barSize={50}>
-                          {[0,1,2,3,4,5].map((_, index) => <Cell key={`cell-${index}`} fill={index === 5 ? '#f43f5e' : '#6366f1'} fillOpacity={0.8} />)}
+                          {[0, 1, 2, 3, 4, 5].map((_, index) => <Cell key={`cell-${index}`} fill={index === 5 ? '#f43f5e' : '#6366f1'} fillOpacity={0.8} />)}
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -1376,7 +1407,7 @@ export default function App() {
                           <td className="py-6 text-center text-sm font-bold text-slate-600">{s.choice}</td>
                           <td className="py-6 text-center text-sm font-bold text-slate-600">{s.modernReading}</td>
                           <td className="py-6 text-center text-sm font-bold text-slate-600">{s.classicReading}</td>
-                          <td className="py-6 text-center text-sm font-black text-indigo-600">{s.composition}</td>
+                          <td className="py-6 text-center text-sm font-bold text-indigo-600">{s.composition}</td>
                           <td className="py-6 text-right"><span className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-black shadow-lg shadow-slate-900/10">{s.total}</span></td>
                           <td className="py-6">
                             <div className="flex items-center justify-center gap-1">
@@ -1440,7 +1471,8 @@ export default function App() {
                                 <button onClick={() => setEssayImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"><AlertCircle className="w-4 h-4" /></button>
                               </motion.div>
                             ))}
-                            {essayImages.length < 5 && (
+                            {/* ✅ 修复：上传上限改为 2 张，与后端对齐 */}
+                            {essayImages.length < 2 && (
                               <label className="aspect-[3/4] rounded-[24px] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center gap-3 cursor-pointer hover:border-emerald-400 hover:bg-emerald-50 transition-all group">
                                 <ImageIcon className="w-10 h-10 text-slate-300 group-hover:text-emerald-400 transition-colors" />
                                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">添加图片</span>
@@ -1525,7 +1557,7 @@ export default function App() {
                         <div className="prose prose-sm max-w-none text-slate-700 leading-loose">
                           <ReactMarkdown>{actionContent}</ReactMarkdown>
                         </div>
-                        
+
                         {goldenSentences.length > 0 && (
                           <div className="mt-8">
                             <h4 className="text-lg font-bold text-slate-900 mb-4">🌟 金句收藏</h4>
@@ -1558,7 +1590,7 @@ export default function App() {
                             <h4 className="font-bold text-slate-900">{record.title}</h4>
                             <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(record.date).toLocaleDateString()}</span>
                           </div>
-                          <div className="prose prose-sm max-w-none text-slate-600 leading-relaxed">
+                          <div className="prose prose-sm max-w-none text-slate-600 leading-relaxed line-clamp-3">
                             <ReactMarkdown>{record.analysis}</ReactMarkdown>
                           </div>
                         </div>
@@ -1584,17 +1616,17 @@ export default function App() {
       {/* Edit Modal */}
       <AnimatePresence>
         {isEditModalOpen && editingStudent && (
-          <motion.div 
-            initial={{ opacity: 0 }} 
-            animate={{ opacity: 1 }} 
-            exit={{ opacity: 0 }} 
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
             className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-6"
             onClick={() => setIsEditModalOpen(false)}
           >
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0 }} 
-              animate={{ scale: 1, opacity: 1 }} 
-              exit={{ scale: 0.95, opacity: 0 }} 
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
               className="bg-white rounded-[32px] p-10 w-full max-w-2xl shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
@@ -1603,10 +1635,10 @@ export default function App() {
                 {['choice', 'modernReading', 'classicReading', 'nonLinear', 'dictation', 'composition'].map(key => (
                   <div key={key}>
                     <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">{key}</label>
-                    <input 
-                      type="number" 
-                      value={(editingStudent as any)[key] || 0} 
-                      onChange={(e) => setEditingStudent({...editingStudent, [key]: parseInt(e.target.value) || 0})} 
+                    <input
+                      type="number"
+                      value={(editingStudent as any)[key] || 0}
+                      onChange={(e) => setEditingStudent({ ...editingStudent, [key]: parseInt(e.target.value) || 0 })}
                       className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-500/10"
                     />
                   </div>
