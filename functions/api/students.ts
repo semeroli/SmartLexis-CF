@@ -1,15 +1,28 @@
-export async function onRequest(context) {
+export async function onRequest(context: any) {
   const { env, request } = context;
   const method = request.method;
 
+  // CORS
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+  if (method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
   if (!env.DB) {
-    return new Response(JSON.stringify({ error: "数据库未绑定" }), { status: 500 });
+    return new Response(JSON.stringify({ error: "数据库未绑定" }), {
+      status: 500,
+      headers: { "Content-Type": "application/json", ...corsHeaders },
+    });
   }
 
   try {
-    // 确保表存在且结构正确
-    await env.DB.prepare(`
-      CREATE TABLE IF NOT EXISTS student_scores (
+    // 建表（若缺少列则补加，不重建表）
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS student_scores (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         student_id TEXT,
         teacher_id TEXT,
@@ -21,13 +34,12 @@ export async function onRequest(context) {
         dictation INTEGER,
         composition INTEGER,
         total INTEGER,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `).run();
+        updated_at TEXT DEFAULT (datetime('now','localtime'))
+      )`
+    ).run();
 
-    // 添加成绩历史表，用于成长曲线
-    await env.DB.prepare(`
-      CREATE TABLE IF NOT EXISTS score_history (
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS score_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         student_id TEXT,
         teacher_id TEXT,
@@ -38,62 +50,15 @@ export async function onRequest(context) {
         dictation INTEGER,
         composition INTEGER,
         total INTEGER,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `).run();
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+      )`
+    ).run();
 
-    // 检查并修复表结构 (SQLite 不支持直接在 ALTER TABLE 中添加 PRIMARY KEY)
-    const tableInfo = await env.DB.prepare("PRAGMA table_info(student_scores)").all();
-    const hasId = tableInfo.results.some(column => column.name === 'id');
-    
-    if (!hasId) {
-      // 如果缺少 id 列，说明是极旧版本的表，需要重建
-      // 首先检查旧表有哪些列，以防 teacher_id 也不存在
-      const oldColumns = tableInfo.results.map(c => c.name);
-      const selectCols = ['student_id', 'name', 'choice', 'modern_reading', 'classic_reading', 'non_linear', 'dictation', 'composition', 'total', 'updated_at'];
-      
-      // 过滤出旧表中确实存在的列
-      const availableCols = selectCols.filter(col => oldColumns.includes(col));
-      if (oldColumns.includes('teacher_id')) {
-        availableCols.push('teacher_id');
-      }
+    // 补加 teacher_id 列（兼容极旧版本）
+    try { await env.DB.prepare("ALTER TABLE student_scores ADD COLUMN teacher_id TEXT").run(); } catch (_) {}
+    try { await env.DB.prepare("ALTER TABLE score_history ADD COLUMN teacher_id TEXT").run(); } catch (_) {}
 
-      await env.DB.prepare("ALTER TABLE student_scores RENAME TO student_scores_old").run();
-      await env.DB.prepare(`
-        CREATE TABLE student_scores (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          student_id TEXT,
-          teacher_id TEXT,
-          name TEXT,
-          choice INTEGER,
-          modern_reading INTEGER,
-          classic_reading INTEGER,
-          non_linear INTEGER,
-          dictation INTEGER,
-          composition INTEGER,
-          total INTEGER,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `).run();
-      
-      // 动态构建迁移 SQL
-      const colsStr = availableCols.join(', ');
-      await env.DB.prepare(`
-        INSERT INTO student_scores (${colsStr})
-        SELECT ${colsStr} FROM student_scores_old
-      `).run();
-      
-      // 删除旧表
-      await env.DB.prepare("DROP TABLE student_scores_old").run();
-    }
-
-    // 尝试添加 teacher_id 列（如果不存在，处理从更早版本升级的情况）
-    try {
-      await env.DB.prepare("ALTER TABLE student_scores ADD COLUMN teacher_id TEXT").run();
-    } catch (e) {
-      // 如果列已存在，会报错，忽略即可
-    }
-
+    // ── GET ──────────────────────────────────────────
     if (method === "GET") {
       const url = new URL(request.url);
       const teacherId = url.searchParams.get("teacher_id");
@@ -102,9 +67,11 @@ export async function onRequest(context) {
       const isAdmin = url.searchParams.get("is_admin") === "true";
 
       if (getHistory && studentId) {
-        const { results } = await env.DB.prepare("SELECT * FROM score_history WHERE student_id = ? ORDER BY created_at ASC").bind(studentId).all();
+        const { results } = await env.DB.prepare(
+          "SELECT * FROM score_history WHERE student_id = ? ORDER BY created_at ASC"
+        ).bind(studentId).all();
         return new Response(JSON.stringify(results || []), {
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...corsHeaders },
         });
       }
 
@@ -115,122 +82,160 @@ export async function onRequest(context) {
         query += " WHERE student_id = ?";
         params.push(studentId);
       } else if (isAdmin) {
-        // 管理员可以查看所有
+        // 管理员查看全部
       } else if (teacherId) {
         query += " WHERE teacher_id = ?";
         params.push(teacherId);
       } else {
-        // 既不是管理员，也没提供 teacher_id/student_id，返回空
         return new Response(JSON.stringify([]), {
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...corsHeaders },
         });
       }
 
       query += " ORDER BY updated_at DESC";
-
       const { results } = await env.DB.prepare(query).bind(...params).all();
       return new Response(JSON.stringify(results || []), {
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
 
+    // ── POST ─────────────────────────────────────────
     if (method === "POST") {
-      const { students, teacher_id } = await request.json();
+      const body = await request.json();
+      const { students, teacher_id } = body;
       if (!Array.isArray(students) || !teacher_id) {
-        return new Response(JSON.stringify({ error: "数据格式错误或缺少教师ID" }), { status: 400 });
+        return new Response(JSON.stringify({ error: "数据格式错误或缺少教师ID" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...corsHeaders },
+        });
       }
 
-      // 批量处理
       for (const s of students) {
-        // 优先通过数据库自增 ID 更新
+        const total =
+          (s.choice || 0) +
+          (s.modernReading || 0) +
+          (s.classicReading || 0) +
+          (s.nonLinear || 0) +
+          (s.dictation || 0) +
+          (s.composition || 0);
+
         if (s.dbId) {
-          await env.DB.prepare(`
-            UPDATE student_scores SET
-              name = ?, choice = ?, modern_reading = ?, classic_reading = ?,
-              non_linear = ?, dictation = ?, composition = ?, total = ?,
-              updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND teacher_id = ?
-          `).bind(s.name, s.choice, s.modernReading, s.classicReading, s.nonLinear, s.dictation, s.composition, s.total, s.dbId, teacher_id).run();
-          
-          // 记录历史
-          const sid = s.id || (await env.DB.prepare("SELECT student_id FROM student_scores WHERE id = ?").bind(s.dbId).first())?.student_id;
-          if (sid) {
-            await env.DB.prepare(`
-              INSERT INTO score_history (student_id, teacher_id, choice, modern_reading, classic_reading, non_linear, dictation, composition, total)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).bind(sid, teacher_id, s.choice, s.modernReading, s.classicReading, s.nonLinear, s.dictation, s.composition, s.total).run();
-          }
+          // 按自增 ID 更新
+          await env.DB.prepare(
+            `UPDATE student_scores SET
+              name=?, choice=?, modern_reading=?, classic_reading=?,
+              non_linear=?, dictation=?, composition=?, total=?,
+              updated_at=datetime('now','localtime')
+            WHERE id=? AND teacher_id=?`
+          )
+            .bind(s.name, s.choice, s.modernReading, s.classicReading,
+                  s.nonLinear, s.dictation, s.composition, total,
+                  s.dbId, teacher_id)
+            .run();
+
+          await env.DB.prepare(
+            `INSERT INTO score_history
+              (student_id,teacher_id,choice,modern_reading,classic_reading,non_linear,dictation,composition,total)
+             VALUES (?,?,?,?,?,?,?,?,?)`
+          )
+            .bind(s.id || "", teacher_id, s.choice, s.modernReading, s.classicReading,
+                  s.nonLinear, s.dictation, s.composition, total)
+            .run();
           continue;
         }
 
-        // 如果有 student_id，尝试更新同一教师下的该学生
-        if (s.id && s.id !== 'N/A') {
+        // 按 student_id 查找已有记录
+        if (s.id && s.id !== "N/A") {
           const existing = await env.DB.prepare(
-            "SELECT id FROM student_scores WHERE student_id = ? AND teacher_id = ?"
+            "SELECT id FROM student_scores WHERE student_id=? AND teacher_id=?"
           ).bind(s.id, teacher_id).first();
-
           if (existing) {
-            await env.DB.prepare(`
-              UPDATE student_scores SET
-                name = ?, choice = ?, modern_reading = ?, classic_reading = ?,
-                non_linear = ?, dictation = ?, composition = ?, total = ?,
-                updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `).bind(s.name, s.choice, s.modernReading, s.classicReading, s.nonLinear, s.dictation, s.composition, s.total, existing.id).run();
-            
-            // 记录历史
-            await env.DB.prepare(`
-              INSERT INTO score_history (student_id, teacher_id, choice, modern_reading, classic_reading, non_linear, dictation, composition, total)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).bind(s.id, teacher_id, s.choice, s.modernReading, s.classicReading, s.nonLinear, s.dictation, s.composition, s.total).run();
+            await env.DB.prepare(
+              `UPDATE student_scores SET
+                name=?, choice=?, modern_reading=?, classic_reading=?,
+                non_linear=?, dictation=?, composition=?, total=?,
+                updated_at=datetime('now','localtime')
+               WHERE id=?`
+            )
+              .bind(s.name, s.choice, s.modernReading, s.classicReading,
+                    s.nonLinear, s.dictation, s.composition, total,
+                    (existing as any).id)
+              .run();
+            await env.DB.prepare(
+              `INSERT INTO score_history
+                (student_id,teacher_id,choice,modern_reading,classic_reading,non_linear,dictation,composition,total)
+               VALUES (?,?,?,?,?,?,?,?,?)`
+            )
+              .bind(s.id, teacher_id, s.choice, s.modernReading, s.classicReading,
+                    s.nonLinear, s.dictation, s.composition, total)
+              .run();
             continue;
           }
         }
 
-        await env.DB.prepare(`
-          INSERT INTO student_scores (student_id, teacher_id, name, choice, modern_reading, classic_reading, non_linear, dictation, composition, total, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        `).bind(s.id || null, teacher_id, s.name, s.choice, s.modernReading, s.classicReading, s.nonLinear, s.dictation, s.composition, s.total).run();
-        
-        // 记录历史
-        if (s.id) {
-          await env.DB.prepare(`
-            INSERT INTO score_history (student_id, teacher_id, choice, modern_reading, classic_reading, non_linear, dictation, composition, total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).bind(s.id, teacher_id, s.choice, s.modernReading, s.classicReading, s.nonLinear, s.dictation, s.composition, s.total).run();
-        }
+        // 新增
+        await env.DB.prepare(
+          `INSERT INTO student_scores
+            (student_id,teacher_id,name,choice,modern_reading,classic_reading,
+             non_linear,dictation,composition,total,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))`
+        )
+          .bind(s.id || null, teacher_id, s.name, s.choice, s.modernReading,
+                s.classicReading, s.nonLinear, s.dictation, s.composition, total)
+          .run();
+
+        await env.DB.prepare(
+          `INSERT INTO score_history
+            (student_id,teacher_id,choice,modern_reading,classic_reading,non_linear,dictation,composition,total)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+          .bind(s.id || "", teacher_id, s.choice, s.modernReading, s.classicReading,
+                s.nonLinear, s.dictation, s.composition, total)
+          .run();
       }
 
       return new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
 
+    // ── DELETE ───────────────────────────────────────
     if (method === "DELETE") {
       const url = new URL(request.url);
-      const id = url.searchParams.get("id"); // 这里的 id 是数据库的自增 id
+      const id = url.searchParams.get("id");
       const teacherId = url.searchParams.get("teacher_id");
       const isAdmin = url.searchParams.get("is_admin") === "true";
 
       if (!id || id === "undefined" || id === "null") {
-        return new Response(JSON.stringify({ error: "无效的记录ID" }), { status: 400 });
+        return new Response(JSON.stringify({ error: "无效的记录ID" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json", ...corsHeaders },
+        });
       }
 
       if (isAdmin) {
-        await env.DB.prepare("DELETE FROM student_scores WHERE id = ?").bind(id).run();
+        await env.DB.prepare("DELETE FROM student_scores WHERE id=?").bind(id).run();
       } else if (teacherId) {
-        await env.DB.prepare("DELETE FROM student_scores WHERE id = ? AND teacher_id = ?").bind(id, teacherId).run();
+        await env.DB.prepare(
+          "DELETE FROM student_scores WHERE id=? AND teacher_id=?"
+        ).bind(id, teacherId).run();
       } else {
-        return new Response(JSON.stringify({ error: "权限不足" }), { status: 403 });
+        return new Response(JSON.stringify({ error: "权限不足" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json", ...corsHeaders },
+        });
       }
 
       return new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
 
-    return new Response("Method Not Allowed", { status: 405 });
-  } catch (err) {
+    return new Response("Method Not Allowed", {
+      status: 405,
+      headers: corsHeaders,
+    });
+  } catch (err: any) {
     console.error("Students API Error:", err);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
