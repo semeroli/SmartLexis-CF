@@ -226,8 +226,34 @@ export async function onRequestPost(context: any) {
       // 即使数据库写入失败，也返回分析结果
     }
 
+    // ✅ 返回前端期望的 WritingRecord 格式
+    const analysisMarkdown = [
+      `## 作文原文\n\n${result.essay_text || '（未识别）'}`,
+      `## 阅卷评分\n\n总分: **${result.score || '?'} / 60**`,
+      `### 各维度得分`,
+      `- 立意深度: ${result.dimensions?.['立意深度'] || '?'}/15`,
+      `- 结构安排: ${result.dimensions?.['结构安排'] || '?'}/15`,
+      `- 语言表达: ${result.dimensions?.['语言表达'] || '?'}/15`,
+      `- 卷面书写: ${result.dimensions?.['卷面书写'] || '?'}/15`,
+      `## 优点`,
+      ...(result.strengths || []).map((s: string) => `- ${s}`),
+      `## 不足与建议`,
+      ...(result.weaknesses || []).map((s: string) => `- ❌ ${s}`),
+      ...(result.suggestions || []).map((s: string) => `- 💡 ${s}`),
+      `## 总体评价\n\n${result.summary || ''}`,
+    ].join('\n');
+
     return new Response(
-      JSON.stringify({ success: true, id, title, result, date }),
+      JSON.stringify({ 
+        id,
+        studentId,
+        teacherId,
+        title,
+        essay_text: result.essay_text || '',
+        analysis: analysisMarkdown,
+        analysis_json: JSON.stringify(result),
+        date
+      }),
       { headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
 
