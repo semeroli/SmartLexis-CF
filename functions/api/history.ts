@@ -22,27 +22,47 @@ export async function onRequestGet(context: any) {
   }
 
   try {
-    // 确保表存在（D1 兼容写法）
+    // ✅ 确保表存在且结构正确
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_records (
         id TEXT PRIMARY KEY,
         studentId TEXT,
         teacherId TEXT,
         title TEXT,
+        essay_text TEXT,
         analysis TEXT,
+        analysis_json TEXT,
         date TEXT
       )`
     ).run();
 
-    // 补加缺失列（D1 支持 ALTER TABLE ADD COLUMN）
-    try { await env.DB.prepare("ALTER TABLE writing_records ADD COLUMN teacherId TEXT").run(); } catch (_) {}
-    try { await env.DB.prepare("ALTER TABLE writing_records ADD COLUMN studentId TEXT").run(); } catch (_) {}
+    // 补加可能缺失的列
+    const alterStatements = [
+      "ALTER TABLE writing_records ADD COLUMN studentId TEXT",
+      "ALTER TABLE writing_records ADD COLUMN teacherId TEXT",
+      "ALTER TABLE writing_records ADD COLUMN essay_text TEXT",
+      "ALTER TABLE writing_records ADD COLUMN analysis_json TEXT",
+    ];
+    for (const sql of alterStatements) {
+      try { await env.DB.prepare(sql).run(); } catch (_) {}
+    }
 
     const { results } = await env.DB.prepare(
-      "SELECT * FROM writing_records WHERE studentId = ? AND teacherId = ? ORDER BY date DESC"
+      "SELECT id, studentId, teacherId, title, essay_text, analysis, analysis_json, date FROM writing_records WHERE studentId = ? AND teacherId = ? ORDER BY date DESC"
     ).bind(studentId, teacherId).all();
 
-    return new Response(JSON.stringify(results), {
+    // 转换为前端期望的格式
+    const formattedResults = (results || []).map((row: any) => ({
+      id: row.id,
+      studentId: row.studentId,
+      teacherId: row.teacherId,
+      title: row.title,
+      essay_text: row.essay_text,
+      analysis: row.analysis_json || row.analysis || "",
+      date: row.date
+    }));
+
+    return new Response(JSON.stringify(formattedResults), {
       headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   } catch (err: any) {
