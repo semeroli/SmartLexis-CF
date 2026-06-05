@@ -1,12 +1,22 @@
-export async function onRequestPost(context) {
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export async function onRequestOptions() {
+  return new Response(null, { headers: corsHeaders });
+}
+
+export async function onRequestPost(context: any) {
   const { request, env } = context;
 
   try {
-    if (!env.MODELSCOPE_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+    if (!env.AGNES_API_KEY) {
+      return new Response(JSON.stringify({ error: "AGNES_API_KEY 未配置" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json", ...corsHeaders },
+      });
     }
 
     const formData = await request.formData();
@@ -18,28 +28,31 @@ export async function onRequestPost(context) {
     if (!imagesJson) {
       return new Response(JSON.stringify({ error: "缺少作文图片" }), {
         status: 400,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
 
     const essayImages = JSON.parse(imagesJson as string);
 
-    // ✅【修复 1】限制最多 2 张图（中学生作文足够）
+    // 限制最多 2 张图
     const safeImages = essayImages.slice(0, 2);
 
-    const contentParts = [
+    // 构造 OpenAI 格式的消息内容
+    const contentParts: any[] = [
       {
         type: "text",
         text: `请对这篇题目为《${title}》的学生手写作文进行深度诊断。
 要求：
 1. 先完整识别图片中的作文文字内容。
-2. 从“立意深度、结构安排、语言表达、卷面书写”四个维度评分（满分60）。
+2. 从"立意深度、结构安排、语言表达、卷面书写"四个维度评分（满分60）。
 3. 给出优缺点与升格建议。
 4. 严格按照系统提示的 JSON 格式输出。`,
       },
     ];
 
+    // 添加图片（OpenAI 多模态格式）
     for (let img of safeImages) {
+      // 确保 base64 格式正确
       if (!img.startsWith("data:image/")) {
         img = `data:image/jpeg;base64,${img}`;
       }
@@ -49,19 +62,18 @@ export async function onRequestPost(context) {
       });
     }
 
-    // ✅【修复 2】强制 keepalive + CF 友好头
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60000);
 
-    const res = await fetch("https://api-inference.modelscope.cn/v1/chat/completions", {
+    // ✅ 调用 agnes-ai API（OpenAI 兼容格式）
+    const res = await fetch("https://apihub.agnes-ai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${env.MODELSCOPE_API_KEY}`,
+        Authorization: `Bearer ${env.AGNES_API_KEY}`,
         "Content-Type": "application/json",
-        "Connection": "keep-alive",
       },
       body: JSON.stringify({
-        model: "Qwen/Qwen3-VL-8B-Instruct",
+        model: "agnes-2.0-flash",
         messages: [
           {
             role: "system",
@@ -90,28 +102,26 @@ export async function onRequestPost(context) {
         ],
         temperature: 0.2,
         max_tokens: 3500,
-        stream: false,
       }),
       signal: controller.signal,
-      keepalive: true,
     });
 
     clearTimeout(timeout);
 
     if (!res.ok) {
+      const errText = await res.text().catch(() => "");
       return new Response(
-        JSON.stringify({ error: "ModelScope API error" }),
-        { status: 502, headers: { "Content-Type": "application/json" } }
+        JSON.stringify({ error: "agnes-ai API error", detail: errText }),
+        { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
     const data = await res.json();
 
-    // ✅【修复 3】更强的 JSON 容错
     let raw = data.choices?.[0]?.message?.content || "";
-    raw = raw.replace(/^```json/, "").replace(/```$/, "").trim();
+    raw = raw.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
 
-    let result;
+    let result: any;
     try {
       result = JSON.parse(raw);
     } catch {
@@ -127,7 +137,7 @@ export async function onRequestPost(context) {
       };
     }
 
-    // ✅ D1 不再建表（前提：你已在 Dashboard 建好）
+    // 写入 D1
     const id = crypto.randomUUID();
     const date = new Date().toISOString();
 
@@ -136,32 +146,24 @@ export async function onRequestPost(context) {
        (id, studentId, teacherId, title, essay_text, analysis_json, date)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(
-        id,
-        studentId,
-        teacherId,
-        title,
-        result.essay_text || "",
-        JSON.stringify(result),
-        date
-      )
+      .bind(id, studentId, teacherId, title, result.essay_text || "", JSON.stringify(result), date)
       .run();
 
     return new Response(
       JSON.stringify({ success: true, id, title, result, date }),
-      { headers: { "Content-Type": "application/json" } }
+      { headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
 
   } catch (err: any) {
     if (err.name === "AbortError") {
       return new Response(JSON.stringify({ error: "阅卷超时，请稍后重试" }), {
         status: 504,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   }
 }
