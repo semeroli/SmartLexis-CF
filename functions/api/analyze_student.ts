@@ -1,14 +1,35 @@
+interface StudentInput {
+  name: string;
+  choice: number;
+  modernReading: number;
+  classicReading: number;
+  nonLinear: number;
+  dictation: number;
+  composition: number;
+  total: number;
+}
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+export const onRequestOptions: PagesFunction = () =>
+  new Response(null, { headers: corsHeaders });
+
 export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = async (context) => {
   const { request, env } = context;
 
   try {
-    const { student } = await request.json<any>();
+    const body = await request.json<{ student: StudentInput }>();
+    const { student } = body;
 
     const apiKey = env.MODELSCOPE_API_KEY;
     if (!apiKey) {
       return new Response(
         JSON.stringify({ error: "MODELSCOPE_API_KEY is missing" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
@@ -36,7 +57,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = asyn
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "ZhipuAI/GLM-5.1", // ✅ 更换为魔塔 GLM-5.1
+        model: "ZhipuAI/GLM-5.1",
         messages: [
           { role: "system", content: "你是资深语文教育专家。" },
           { role: "user", content: prompt },
@@ -52,21 +73,20 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = asyn
       console.error("ModelScope error:", data);
       return new Response(
         JSON.stringify({ error: "ModelScope API error", detail: data }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
       );
     }
 
-    const analysis =
-      data?.choices?.[0]?.message?.content ?? "分析失败";
+    const analysis = data?.choices?.[0]?.message?.content ?? "分析失败";
 
     return new Response(
       JSON.stringify({ status: "ok", analysis }),
-      { headers: { "Content-Type": "application/json" } }
+      { headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
   } catch (err: any) {
     return new Response(
       JSON.stringify({ error: err.message }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
+      { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
     );
   }
 };
