@@ -23,6 +23,31 @@ export async function onRequestPost(context: any) {
       });
     }
 
+    // ✅ 确保 D1 表存在且结构正确
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS writing_records (
+        id TEXT PRIMARY KEY,
+        studentId TEXT,
+        teacherId TEXT,
+        title TEXT,
+        essay_text TEXT,
+        analysis TEXT,
+        analysis_json TEXT,
+        date TEXT
+      )`
+    ).run();
+
+    // 补加可能缺失的列（D1 不支持 IF NOT EXISTS，用 try-catch）
+    const alterStatements = [
+      "ALTER TABLE writing_records ADD COLUMN studentId TEXT",
+      "ALTER TABLE writing_records ADD COLUMN teacherId TEXT", 
+      "ALTER TABLE writing_records ADD COLUMN essay_text TEXT",
+      "ALTER TABLE writing_records ADD COLUMN analysis_json TEXT",
+    ];
+    for (const sql of alterStatements) {
+      try { await env.DB.prepare(sql).run(); } catch (_) {}
+    }
+
     const formData = await request.formData();
     const title = formData.get("title") || "未命名作文";
     const studentId = formData.get("studentId") || "unknown";
@@ -176,15 +201,26 @@ export async function onRequestPost(context: any) {
     // 写入 D1
     const id = crypto.randomUUID();
     const date = new Date().toISOString();
+    const analysisText = result.summary || "";
 
     try {
       await env.DB.prepare(
         `INSERT INTO writing_records
-         (id, studentId, teacherId, title, essay_text, analysis_json, date)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+         (id, studentId, teacherId, title, essay_text, analysis, analysis_json, date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-        .bind(id, studentId, teacherId, title, result.essay_text || "", JSON.stringify(result), date)
+        .bind(
+          id, 
+          studentId, 
+          teacherId, 
+          title, 
+          result.essay_text || "", 
+          analysisText,
+          JSON.stringify(result), 
+          date
+        )
         .run();
+      console.log("D1 insert success");
     } catch (dbErr: any) {
       console.error("D1 insert error:", dbErr.message);
       // 即使数据库写入失败，也返回分析结果
