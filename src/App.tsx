@@ -1221,8 +1221,9 @@ export default function App() {
     if (!students.length) return [];
     const types = [
       { label: '选择题', key: 'choice', max: 30 },
-      { label: '现代文阅读', key: 'modernReading', max: 35 },
+      { label: '现代文阅读', key: 'modernReading', max: 30 },
       { label: '文言文阅读', key: 'classicReading', max: 20 },
+      { label: '非连续性文本', key: 'nonLinear', max: 10 },
       { label: '默写填空', key: 'dictation', max: 10 },
       { label: '作文', key: 'composition', max: 50 }
     ];
