@@ -1,38 +1,29 @@
-// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
-const ALLOWED_ORIGINS = [
-  "https://smartlexis-cf.pages.dev",
-  "http://localhost:5173",
-  "http://localhost:8788",
-];
-function corsHeadersFor(request: Request): Record<string, string> {
-  const origin = request.headers.get("Origin") || "";
-  if (!ALLOWED_ORIGINS.includes(origin)) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-  };
-}
+import {
+  AuthError,
+  assertStudentAccess,
+  corsHeadersFor,
+  errorResponse,
+  isPlaceholderStudentId,
+  jsonResponse,
+  requireUser,
+  resolveOwnerTeacherId,
+} from "../../shared/api";
 
-export async function onRequestOptions(context: any) {
-  return new Response(null, { headers: corsHeadersFor(context.request) });
-}
+// 作文阅卷。身份与归属全部由令牌推导：
+//   学生  → 只能给自己批阅，记录归本班教师名下
+//   教师  → 只能给本班学生批阅（学生还没导入名单时按占位学号放行，不打断正常使用）
+//   管理员 → 不限
+// 前端传来的 studentId / teacherId 只当作"想批阅哪个学生"的意图，不再当作身份凭据。
+
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
 
 export async function onRequestPost(context: any) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    // 检查环境变量
-    if (!env.AGNES_API_KEY) {
-      console.error("AGNES_API_KEY not configured");
-      return new Response(JSON.stringify({ 
-        error: "AGNES_API_KEY 未配置，请在 Cloudflare Pages 环境变量中设置" 
-      }), {
-        status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
-    }
+    const user = await requireUser(env, request);
 
     // ✅ 确保 D1 表存在且结构正确
     await env.DB.prepare(
@@ -51,7 +42,7 @@ export async function onRequestPost(context: any) {
     // 补加可能缺失的列（D1 不支持 IF NOT EXISTS，用 try-catch）
     const alterStatements = [
       "ALTER TABLE writing_records ADD COLUMN studentId TEXT",
-      "ALTER TABLE writing_records ADD COLUMN teacherId TEXT", 
+      "ALTER TABLE writing_records ADD COLUMN teacherId TEXT",
       "ALTER TABLE writing_records ADD COLUMN essay_text TEXT",
       "ALTER TABLE writing_records ADD COLUMN analysis_json TEXT",
     ];
@@ -61,35 +52,50 @@ export async function onRequestPost(context: any) {
 
     const formData = await request.formData();
     const title = formData.get("title") || "未命名作文";
-    const studentId = formData.get("studentId") || "unknown";
-    const teacherId = formData.get("teacherId") || "system";
+    const requestedStudentId = String(formData.get("studentId") || "").trim();
     const imagesJson = formData.get("images");
 
-    if (!imagesJson) {
-      return new Response(JSON.stringify({ error: "缺少作文图片" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
-    }
+    if (!imagesJson) throw new AuthError(400, "缺少作文图片");
 
     let essayImages: string[];
     try {
       essayImages = JSON.parse(imagesJson as string);
     } catch (e) {
-      return new Response(JSON.stringify({ error: "图片数据格式错误" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
+      throw new AuthError(400, "图片数据格式错误");
     }
 
     // 限制最多 2 张图
     const safeImages = essayImages.slice(0, 2);
-    
-    if (safeImages.length === 0) {
-      return new Response(JSON.stringify({ error: "未提供有效图片" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
+    if (safeImages.length === 0) throw new AuthError(400, "未提供有效图片");
+
+    // ── 归属与身份：服务端说了算 ────────────────────
+    let studentId: string;
+    let teacherId: string;
+
+    if (user.role === "student") {
+      // 学生只能给自己批阅，即使请求体里写了别人的学号也没用
+      studentId = user.studentId || user.uid;
+      // 记录归到本班教师名下，这样教师在班级里能看到这条批阅记录
+      teacherId = (await resolveOwnerTeacherId(env, studentId)) || user.uid;
+    } else if (user.role === "admin") {
+      studentId = requestedStudentId || "N/A";
+      teacherId = String(formData.get("teacherId") || user.uid);
+    } else {
+      // 教师
+      if (!isPlaceholderStudentId(requestedStudentId)) {
+        await assertStudentAccess(env, user, requestedStudentId);
+      }
+      studentId = requestedStudentId || "N/A";
+      teacherId = user.uid;
+    }
+
+    // 配置检查放在身份与范围判定之后：没权限的请求直接 403，
+    // 不会因为"密钥没配置"而暴露服务器状态。
+    if (!env.AGNES_API_KEY) {
+      console.error("AGNES_API_KEY not configured");
+      return jsonResponse({
+        error: "AGNES_API_KEY 未配置，请在 Cloudflare Pages 环境变量中设置",
+      }, 500, cors);
     }
 
     // 构造 OpenAI 格式的消息内容
@@ -168,26 +174,20 @@ export async function onRequestPost(context: any) {
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       console.error(`agnes-ai API error: ${res.status} ${errText}`);
-      return new Response(
-        JSON.stringify({ 
-          error: `agnes-ai API 错误 (${res.status})`, 
-          detail: errText 
-        }),
-        { status: 502, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-      );
+      return jsonResponse({
+        error: `agnes-ai API 错误 (${res.status})`,
+        detail: errText,
+      }, 502, cors);
     }
 
     const data = await res.json();
     console.log("agnes-ai response received");
 
     let raw = data.choices?.[0]?.message?.content || "";
-    
+
     if (!raw) {
       console.error("agnes-ai returned empty content:", JSON.stringify(data));
-      return new Response(
-        JSON.stringify({ error: "agnes-ai 返回空内容", detail: data }),
-        { status: 502, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-      );
+      return jsonResponse({ error: "agnes-ai 返回空内容", detail: data }, 502, cors);
     }
 
     raw = raw.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
@@ -221,13 +221,13 @@ export async function onRequestPost(context: any) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
         .bind(
-          id, 
-          studentId, 
-          teacherId, 
-          title, 
-          result.essay_text || "", 
+          id,
+          studentId,
+          teacherId,
+          title,
+          result.essay_text || "",
           analysisText,
-          JSON.stringify(result), 
+          JSON.stringify(result),
           date
         )
         .run();
@@ -254,36 +254,23 @@ export async function onRequestPost(context: any) {
       `## 总体评价\n\n${result.summary || ''}`,
     ].join('\n');
 
-    return new Response(
-      JSON.stringify({ 
-        id,
-        studentId,
-        teacherId,
-        title,
-        essay_text: result.essay_text || '',
-        analysis: analysisMarkdown,
-        analysis_json: JSON.stringify(result),
-        date
-      }),
-      { headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-    );
+    return jsonResponse({
+      id,
+      studentId,
+      teacherId,
+      title,
+      essay_text: result.essay_text || '',
+      analysis: analysisMarkdown,
+      analysis_json: JSON.stringify(result),
+      date,
+    }, 200, cors);
 
   } catch (err: any) {
     console.error("analyze_essay error:", err);
-    
+
     if (err.name === "AbortError") {
-      return new Response(JSON.stringify({ error: "阅卷超时（60秒），请稍后重试" }), {
-        status: 504,
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
+      return jsonResponse({ error: "阅卷超时（60秒），请稍后重试" }, 504, cors);
     }
-    
-    return new Response(JSON.stringify({ 
-      error: err.message || "服务器内部错误",
-      stack: err.stack 
-    }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
+    return errorResponse(err, request);
   }
 }

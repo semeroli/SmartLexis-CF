@@ -1,36 +1,22 @@
 import { GoogleGenAI, Modality } from "@google/genai";
+import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
 
-// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
-const ALLOWED_ORIGINS = [
-  "https://smartlexis-cf.pages.dev",
-  "http://localhost:5173",
-  "http://localhost:8788",
-];
-function corsHeadersFor(request: Request): Record<string, string> {
-  const origin = request.headers.get("Origin") || "";
-  if (!ALLOWED_ORIGINS.includes(origin)) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-  };
-}
+// 语音合成（朗读范文）。会消耗 Gemini 额度，必须登录。
 
-export async function onRequestOptions(context: any) {
-  return new Response(null, { headers: corsHeadersFor(context.request) });
-}
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
 
 export async function onRequestPost(context: any) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, "POST, OPTIONS");
+
   try {
+    await requireUser(env, request);
+
     const { text } = await request.json();
 
     if (!env.GEMINI_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "未配置 GEMINI_API_KEY 环境变量" }),
-        { status: 500, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-      );
+      return jsonResponse({ error: "未配置 GEMINI_API_KEY 环境变量" }, 500, cors);
     }
 
     const keys = env.GEMINI_API_KEY.split(",").map((k: string) => k.trim());
@@ -66,14 +52,9 @@ export async function onRequestPost(context: any) {
       throw new Error("Gemini 未返回音频数据");
     }
 
-    return new Response(JSON.stringify({ audio: base64Audio }), {
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
+    return jsonResponse({ audio: base64Audio }, 200, cors);
   } catch (err: any) {
     console.error("TTS API Error:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
+    return errorResponse(err, request);
   }
 }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { LogIn, UserPlus, Sparkles, Loader2, AlertCircle } from 'lucide-react';
+import { saveSession } from '../lib/api';
 
 interface AuthProps {
   onAuthSuccess: (user: any) => void;
@@ -31,8 +32,10 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
           body: JSON.stringify({ email, password })
         });
         const data = await response.json();
-        if (response.ok) {
-          onAuthSuccess(data);
+        if (response.ok && data.token && data.user) {
+          // 令牌存在本地，之后所有接口请求都会自动带上它
+          saveSession(data.token, data.user);
+          onAuthSuccess(data.user);
         } else {
           setError(data.error || '登录失败');
         }
@@ -43,8 +46,9 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
           body: JSON.stringify({ email, password, name, studentId, role })
         });
         const data = await response.json();
-        if (response.ok) {
-          onAuthSuccess(data);
+        if (response.ok && data.token && data.user) {
+          saveSession(data.token, data.user);
+          onAuthSuccess(data.user);
         } else {
           setError(data.error || '注册失败');
         }

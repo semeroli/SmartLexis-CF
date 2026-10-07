@@ -1,36 +1,30 @@
-// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
-const ALLOWED_ORIGINS = [
-  "https://smartlexis-cf.pages.dev",
-  "http://localhost:5173",
-  "http://localhost:8788",
-];
-function corsHeadersFor(request: Request): Record<string, string> {
-  const origin = request.headers.get("Origin") || "";
-  if (!ALLOWED_ORIGINS.includes(origin)) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-  };
-}
+import {
+  AuthError,
+  assertStudentAccess,
+  corsHeadersFor,
+  errorResponse,
+  jsonResponse,
+  requireUser,
+} from "../../shared/api";
 
-export async function onRequestOptions(context: any) {
-  return new Response(null, { headers: corsHeadersFor(context.request) });
-}
+// 作文素材库。原先 ?student_id= 谁都能读、DELETE 只要同时传 student_id 就算"校验归属"
+// （等于自己给自己发许可），现在一律走令牌 + 范围闸门。
+
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "GET, POST, DELETE, OPTIONS") });
 
 export async function onRequest(context: any) {
   const { env, request } = context;
   const method = request.method;
+  const cors = corsHeadersFor(request, "GET, POST, DELETE, OPTIONS");
 
   if (!env.DB) {
-    return new Response(JSON.stringify({ error: "数据库未绑定" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
+    return jsonResponse({ error: "数据库未绑定" }, 500, cors);
   }
 
   try {
+    const user = await requireUser(env, request);
+
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_materials (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,83 +37,56 @@ export async function onRequest(context: any) {
     ).run();
 
     const url = new URL(request.url);
-    const studentId = url.searchParams.get("student_id");
+    const studentId = url.searchParams.get("student_id") || "";
 
     // ── GET ───────────────────────────────────────
     if (method === "GET") {
-      if (!studentId) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-        });
-      }
+      if (!studentId) return jsonResponse([], 200, cors);
+      await assertStudentAccess(env, user, studentId);
+
       const { results } = await env.DB.prepare(
         "SELECT * FROM writing_materials WHERE student_id = ? ORDER BY created_at DESC"
       ).bind(studentId).all();
-      return new Response(JSON.stringify(results || []), {
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
+      return jsonResponse(results || [], 200, cors);
     }
 
     // ── POST ──────────────────────────────────────
     if (method === "POST") {
-      const { student_id, content, theme, source_title } = await request.json();
-      if (!student_id || !content) {
-        return new Response(JSON.stringify({ error: "缺少必要参数" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-        });
-      }
+      const body: any = await request.json().catch(() => ({}));
+      const { content, theme, source_title } = body;
+      const sid = body.student_id || studentId;
+
+      if (!sid || !content) throw new AuthError(400, "缺少必要参数");
+      await assertStudentAccess(env, user, sid);
 
       await env.DB.prepare(
         `INSERT INTO writing_materials (student_id, content, theme, source_title)
          VALUES (?, ?, ?, ?)`
-      ).bind(student_id, content, theme || "其他", source_title || "未知").run();
+      ).bind(sid, content, theme || "其他", source_title || "未知").run();
 
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
+      return jsonResponse({ success: true }, 200, cors);
     }
 
-    // ── DELETE（校验归属）────────────────────────
+    // ── DELETE（先查归属再删）─────────────────────
     if (method === "DELETE") {
       const id = url.searchParams.get("id");
-      const sid = url.searchParams.get("student_id");
+      if (!id) throw new AuthError(400, "缺少ID");
 
-      if (!id) {
-        return new Response(JSON.stringify({ error: "缺少ID" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-        });
-      }
+      const row: any = await env.DB.prepare(
+        "SELECT student_id FROM writing_materials WHERE id = ?"
+      ).bind(id).first();
 
-      // 必须提供 student_id 用于校验归属
-      if (sid) {
-        const existing = await env.DB.prepare(
-          "SELECT id FROM writing_materials WHERE id = ? AND student_id = ?"
-        ).bind(id, sid).first();
-        if (!existing) {
-          return new Response(JSON.stringify({ error: "无权删除该素材" }), {
-            status: 403,
-            headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-          });
-        }
-      }
+      if (!row) throw new AuthError(404, "素材不存在");
+
+      // 归属由数据库里的记录决定，不由请求参数决定
+      await assertStudentAccess(env, user, row.student_id);
 
       await env.DB.prepare("DELETE FROM writing_materials WHERE id = ?").bind(id).run();
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-      });
+      return jsonResponse({ success: true }, 200, cors);
     }
 
-    return new Response("Method Not Allowed", {
-      status: 405,
-      headers: corsHeadersFor(request),
-    });
-  } catch (err: any) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
+    return jsonResponse({ error: "Method Not Allowed" }, 405, cors);
+  } catch (err) {
+    return errorResponse(err, request);
   }
 }

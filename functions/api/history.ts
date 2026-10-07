@@ -1,39 +1,36 @@
-// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
-const ALLOWED_ORIGINS = [
-  "https://smartlexis-cf.pages.dev",
-  "http://localhost:5173",
-  "http://localhost:8788",
-];
-function corsHeadersFor(request: Request): Record<string, string> {
-  const origin = request.headers.get("Origin") || "";
-  if (!ALLOWED_ORIGINS.includes(origin)) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-  };
-}
+import {
+  AuthError,
+  assertStudentAccess,
+  corsHeadersFor,
+  errorResponse,
+  jsonResponse,
+  requireUser,
+} from "../../shared/api";
 
-export async function onRequestOptions(context: any) {
-  return new Response(null, { headers: corsHeadersFor(context.request) });
-}
+// 作文批阅历史。原先要 ?studentId= 和 ?teacherId= 两个参数、且都不校验，
+// 现在只认令牌：学号必须落在当前用户的可见范围内，教师身份由令牌给出。
+
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "GET, OPTIONS") });
 
 export async function onRequestGet(context: any) {
   const { request, env } = context;
-  const url = new URL(request.url);
-  const studentId = url.searchParams.get("studentId");
-  const teacherId = url.searchParams.get("teacherId");
+  const cors = corsHeadersFor(request, "GET, OPTIONS");
 
-  if (!studentId || !teacherId) {
-    return new Response(JSON.stringify({ error: "Missing studentId or teacherId" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
-  }
+  if (!env.DB) return jsonResponse({ error: "数据库未绑定" }, 500, cors);
 
   try {
-    // ✅ 确保表存在且结构正确
+    const user = await requireUser(env, request);
+
+    const url = new URL(request.url);
+    const studentId = url.searchParams.get("studentId") || "";
+
+    if (!studentId) throw new AuthError(400, "缺少学号");
+
+    // 范围闸门：学生只能看自己，教师只能看本班，管理员不限
+    await assertStudentAccess(env, user, studentId);
+
+    // 确保表存在且结构正确
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS writing_records (
         id TEXT PRIMARY KEY,
@@ -58,9 +55,18 @@ export async function onRequestGet(context: any) {
       try { await env.DB.prepare(sql).run(); } catch (_) {}
     }
 
-    const { results } = await env.DB.prepare(
-      "SELECT id, studentId, teacherId, title, essay_text, analysis, analysis_json, date FROM writing_records WHERE studentId = ? AND teacherId = ? ORDER BY date DESC"
-    ).bind(studentId, teacherId).all();
+    let query =
+      "SELECT id, studentId, teacherId, title, essay_text, analysis, analysis_json, date FROM writing_records WHERE studentId = ?";
+    const params: any[] = [studentId];
+
+    // 教师只看自己批阅过的记录；学生/管理员看该学号的全部记录
+    if (user.role === "teacher") {
+      query += " AND teacherId = ?";
+      params.push(user.uid);
+    }
+    query += " ORDER BY date DESC";
+
+    const { results } = await env.DB.prepare(query).bind(...params).all();
 
     // 转换为前端期望的格式
     const formattedResults = (results || []).map((row: any) => ({
@@ -70,16 +76,11 @@ export async function onRequestGet(context: any) {
       title: row.title,
       essay_text: row.essay_text,
       analysis: row.analysis_json || row.analysis || "",
-      date: row.date
+      date: row.date,
     }));
 
-    return new Response(JSON.stringify(formattedResults), {
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
-  } catch (err: any) {
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
-    });
+    return jsonResponse(formattedResults, 200, cors);
+  } catch (err) {
+    return errorResponse(err, request);
   }
 }

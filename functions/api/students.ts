@@ -1,33 +1,25 @@
-// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
-const ALLOWED_ORIGINS = [
-  "https://smartlexis-cf.pages.dev",
-  "http://localhost:5173",
-  "http://localhost:8788",
-];
+import {
+  AuthError,
+  assertStudentAccess,
+  corsHeadersFor,
+  errorResponse,
+  jsonResponse,
+  requireUser,
+} from "../../shared/api";
+
+// 本接口涉及"谁能看谁的成绩"，身份**只从令牌推导**。
+// 原先的 ?teacher_id= / ?student_id= / ?is_admin=true 都是客户端自己填的，等于没有鉴权，已废弃。
+
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "GET, POST, DELETE, OPTIONS") });
 
 export async function onRequest(context: any) {
   const { env, request } = context;
   const method = request.method;
-
-  // CORS：按请求来源动态判定，非白名单来源不下发跨域许可头
-  const reqOrigin = request.headers.get("Origin") || "";
-  const corsHeaders: Record<string, string> = ALLOWED_ORIGINS.includes(reqOrigin)
-    ? {
-        "Access-Control-Allow-Origin": reqOrigin,
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Vary": "Origin",
-      }
-    : {};
-  if (method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
-  }
+  const cors = corsHeadersFor(request, "GET, POST, DELETE, OPTIONS");
 
   if (!env.DB) {
-    return new Response(JSON.stringify({ error: "数据库未绑定" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
-    });
+    return jsonResponse({ error: "数据库未绑定" }, 500, cors);
   }
 
   try {
@@ -69,57 +61,63 @@ export async function onRequest(context: any) {
     try { await env.DB.prepare("ALTER TABLE student_scores ADD COLUMN teacher_id TEXT").run(); } catch (_) {}
     try { await env.DB.prepare("ALTER TABLE score_history ADD COLUMN teacher_id TEXT").run(); } catch (_) {}
 
+    // ── 鉴权：以下所有分支都要求合法令牌 ──────────────
+    const user = await requireUser(env, request);
+
     // ── GET ──────────────────────────────────────────
     if (method === "GET") {
       const url = new URL(request.url);
-      const teacherId = url.searchParams.get("teacher_id");
-      const studentId = url.searchParams.get("student_id");
+      const studentId = url.searchParams.get("student_id") || "";
       const getHistory = url.searchParams.get("history") === "true";
-      const isAdmin = url.searchParams.get("is_admin") === "true";
 
-      if (getHistory && studentId) {
+      if (getHistory) {
+        if (!studentId) throw new AuthError(400, "缺少学号");
+        await assertStudentAccess(env, user, studentId);
         const { results } = await env.DB.prepare(
           "SELECT * FROM score_history WHERE student_id = ? ORDER BY created_at ASC"
         ).bind(studentId).all();
-        return new Response(JSON.stringify(results || []), {
-          headers: { "Content-Type": "application/json", ...corsHeaders },
-        });
+        return jsonResponse(results || [], 200, cors);
       }
 
       let query = "SELECT * FROM student_scores";
-      let params: any[] = [];
+      const params: any[] = [];
 
       if (studentId) {
+        // 指定了某个学号：先过范围闸门，再查
+        await assertStudentAccess(env, user, studentId);
         query += " WHERE student_id = ?";
         params.push(studentId);
-      } else if (isAdmin) {
+      } else if (user.role === "admin") {
         // 管理员查看全部
-      } else if (teacherId) {
-        query += " WHERE teacher_id = ?";
-        params.push(teacherId);
+      } else if (user.role === "student") {
+        if (!user.studentId) return jsonResponse([], 200, cors);
+        query += " WHERE student_id = ?";
+        params.push(user.studentId);
       } else {
-        return new Response(JSON.stringify([]), {
-          headers: { "Content-Type": "application/json", ...corsHeaders },
-        });
+        // 教师：只看自己名下（uid 由令牌给出，不看请求参数）
+        query += " WHERE teacher_id = ?";
+        params.push(user.uid);
       }
 
       query += " ORDER BY updated_at DESC";
       const { results } = await env.DB.prepare(query).bind(...params).all();
-      return new Response(JSON.stringify(results || []), {
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      });
+      return jsonResponse(results || [], 200, cors);
     }
 
-    // ── POST ─────────────────────────────────────────
+    // ── POST（录入/更新成绩）─────────────────────────
     if (method === "POST") {
-      const body = await request.json();
-      const { students, teacher_id } = body;
-      if (!Array.isArray(students) || !teacher_id) {
-        return new Response(JSON.stringify({ error: "数据格式错误或缺少教师ID" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json", ...corsHeaders },
-        });
+      if (user.role !== "teacher" && user.role !== "admin") {
+        throw new AuthError(403, "只有教师可以录入成绩");
       }
+
+      const body: any = await request.json().catch(() => ({}));
+      const students = body.students;
+      if (!Array.isArray(students)) {
+        throw new AuthError(400, "数据格式错误");
+      }
+
+      // 归属教师：教师写死为自己；管理员允许显式指定（后台维护场景）
+      const teacherId = user.role === "admin" && body.teacher_id ? String(body.teacher_id) : user.uid;
 
       for (const s of students) {
         const total =
@@ -131,7 +129,7 @@ export async function onRequest(context: any) {
           (s.composition || 0);
 
         if (s.dbId) {
-          // 按自增 ID 更新
+          // 按自增 ID 更新（teacher_id 条件保证只能改自己的记录）
           await env.DB.prepare(
             `UPDATE student_scores SET
               name=?, choice=?, modern_reading=?, classic_reading=?,
@@ -141,7 +139,7 @@ export async function onRequest(context: any) {
           )
             .bind(s.name, s.choice, s.modernReading, s.classicReading,
                   s.nonLinear, s.dictation, s.composition, total,
-                  s.dbId, teacher_id)
+                  s.dbId, teacherId)
             .run();
 
           await env.DB.prepare(
@@ -149,7 +147,7 @@ export async function onRequest(context: any) {
               (student_id,teacher_id,choice,modern_reading,classic_reading,non_linear,dictation,composition,total)
              VALUES (?,?,?,?,?,?,?,?,?)`
           )
-            .bind(s.id || "", teacher_id, s.choice, s.modernReading, s.classicReading,
+            .bind(s.id || "", teacherId, s.choice, s.modernReading, s.classicReading,
                   s.nonLinear, s.dictation, s.composition, total)
             .run();
           continue;
@@ -159,7 +157,7 @@ export async function onRequest(context: any) {
         if (s.id && s.id !== "N/A") {
           const existing = await env.DB.prepare(
             "SELECT id FROM student_scores WHERE student_id=? AND teacher_id=?"
-          ).bind(s.id, teacher_id).first();
+          ).bind(s.id, teacherId).first();
           if (existing) {
             await env.DB.prepare(
               `UPDATE student_scores SET
@@ -177,7 +175,7 @@ export async function onRequest(context: any) {
                 (student_id,teacher_id,choice,modern_reading,classic_reading,non_linear,dictation,composition,total)
                VALUES (?,?,?,?,?,?,?,?,?)`
             )
-              .bind(s.id, teacher_id, s.choice, s.modernReading, s.classicReading,
+              .bind(s.id, teacherId, s.choice, s.modernReading, s.classicReading,
                     s.nonLinear, s.dictation, s.composition, total)
               .run();
             continue;
@@ -191,7 +189,7 @@ export async function onRequest(context: any) {
              non_linear,dictation,composition,total,updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now','localtime'))`
         )
-          .bind(s.id || null, teacher_id, s.name, s.choice, s.modernReading,
+          .bind(s.id || null, teacherId, s.name, s.choice, s.modernReading,
                 s.classicReading, s.nonLinear, s.dictation, s.composition, total)
           .run();
 
@@ -200,57 +198,48 @@ export async function onRequest(context: any) {
             (student_id,teacher_id,choice,modern_reading,classic_reading,non_linear,dictation,composition,total)
            VALUES (?,?,?,?,?,?,?,?,?)`
         )
-          .bind(s.id || "", teacher_id, s.choice, s.modernReading, s.classicReading,
+          .bind(s.id || "", teacherId, s.choice, s.modernReading, s.classicReading,
                 s.nonLinear, s.dictation, s.composition, total)
           .run();
       }
 
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      });
+      return jsonResponse({ success: true }, 200, cors);
     }
 
     // ── DELETE ───────────────────────────────────────
     if (method === "DELETE") {
       const url = new URL(request.url);
       const id = url.searchParams.get("id");
-      const teacherId = url.searchParams.get("teacher_id");
-      const isAdmin = url.searchParams.get("is_admin") === "true";
 
       if (!id || id === "undefined" || id === "null") {
-        return new Response(JSON.stringify({ error: "无效的记录ID" }), {
-          status: 400,
-          headers: { "Content-Type": "application/json", ...corsHeaders },
-        });
+        throw new AuthError(400, "无效的记录ID");
       }
 
-      if (isAdmin) {
+      // 先查出这条记录归谁，再决定能不能删——不再相信请求里的 teacher_id / is_admin
+      const row: any = await env.DB.prepare(
+        "SELECT student_id, teacher_id FROM student_scores WHERE id=?"
+      ).bind(id).first();
+
+      if (!row) throw new AuthError(404, "记录不存在");
+
+      if (user.role === "admin") {
         await env.DB.prepare("DELETE FROM student_scores WHERE id=?").bind(id).run();
-      } else if (teacherId) {
+      } else if (user.role === "teacher") {
+        if (String(row.teacher_id || "") !== user.uid) {
+          throw new AuthError(403, "只能删除本班学生的成绩");
+        }
         await env.DB.prepare(
           "DELETE FROM student_scores WHERE id=? AND teacher_id=?"
-        ).bind(id, teacherId).run();
+        ).bind(id, user.uid).run();
       } else {
-        return new Response(JSON.stringify({ error: "权限不足" }), {
-          status: 403,
-          headers: { "Content-Type": "application/json", ...corsHeaders },
-        });
+        throw new AuthError(403, "没有权限删除成绩");
       }
 
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      });
+      return jsonResponse({ success: true }, 200, cors);
     }
 
-    return new Response("Method Not Allowed", {
-      status: 405,
-      headers: corsHeaders,
-    });
-  } catch (err: any) {
-    console.error("Students API Error:", err);
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "Method Not Allowed" }, 405, cors);
+  } catch (err) {
+    return errorResponse(err, request);
   }
 }

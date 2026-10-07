@@ -1,13 +1,19 @@
-// 安全：本站页面调用本接口都是同源请求，不需要、也不下发任何跨域许可头。
-// 显式处理预检，避免平台默认的 405 响应附带上 Access-Control-Allow-Origin: *。
-export const onRequestOptions = () => new Response(null, { status: 204 });
+import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
 
-export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = async (context) => {
+// 专项练习生成。同样会消耗 AI 额度，必须登录。
+
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
+
+export async function onRequestPost(context: any) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    const { student } = await request.json<any>();
-    const s = student || {};
+    await requireUser(env, request);
+
+    const body: any = await request.json().catch(() => ({}));
+    const s = body.student || {};
 
     const weakPoints = [];
     if ((s.classicReading || 0) < 12) weakPoints.push("文言文阅读理解");
@@ -20,10 +26,7 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = asyn
 
     const apiKey = env.MODELSCOPE_API_KEY;
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ error: "MODELSCOPE_API_KEY is missing" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+      return jsonResponse({ error: "MODELSCOPE_API_KEY is missing" }, 500, cors);
     }
 
     const prompt = `你是一位资深的语文特级教师。根据该学生的考试表现（重点提升：${focusArea}），请生成一份“专项练习”试题集。
@@ -76,23 +79,16 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = asyn
 
     if (!res.ok) {
       console.error("ModelScope error:", data);
-      return new Response(
-        JSON.stringify({ error: "ModelScope API error", detail: data }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+      return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
     }
 
-    const practice =
-      data?.choices?.[0]?.message?.content ?? "{}";
+    const practice = data?.choices?.[0]?.message?.content ?? "{}";
 
     // 直接返回 AI 生成的 JSON 字符串
     return new Response(practice, {
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...cors },
     });
   } catch (err: any) {
-    return new Response(
-      JSON.stringify({ error: err.message }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+    return errorResponse(err, request);
   }
-};
+}

@@ -22,6 +22,13 @@ import { jsPDF } from 'jspdf';
 // 原来的 html2canvas@1.4.1 不认识这些颜色格式，遇到就抛异常 —— 所以"导出 PDF"必然失败。
 import html2canvas from 'html2canvas-pro';
 import { cn } from './lib/utils';
+import {
+  apiFetch,
+  clearSession,
+  getStoredUser,
+  getToken,
+  setUnauthorizedHandler,
+} from './lib/api';
 import Auth from './components/Auth';
 import AdminDashboard from './components/AdminDashboard';
 
@@ -424,68 +431,85 @@ export default function App() {
   const [preGeneratedAudio, setPreGeneratedAudio] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // 启动时校验本地登录态：令牌有效才认，并且身份以服务端返回的为准。
+  // 只看 localStorage 是不算数的——那里面用户能自己改。
   useEffect(() => {
-    const savedUser = localStorage.getItem('lexis_user');
-    if (savedUser) {
+    // 任何请求遇到 401 都会走到这里：清掉本地状态，退回登录页
+    setUnauthorizedHandler(() => {
+      setUser(null);
+      setView('teacher');
+    });
+
+    const applyUser = (userData: any) => {
+      setUser(userData);
+      if (userData.role === 'student') {
+        setView('student');
+        setSelectedStudentId(userData.studentId || userData.uid);
+      } else if (userData.role === 'admin') {
+        setView('admin');
+      } else {
+        setView('teacher');
+      }
+    };
+
+    (async () => {
+      if (!getToken()) {
+        // 老版本登录过、本地只有 user 没有令牌的情况：残留一律清掉
+        if (getStoredUser()) clearSession();
+        setAuthLoading(false);
+        return;
+      }
       try {
-        const userData = JSON.parse(savedUser);
-        setUser(userData);
-        if (userData.role === 'student') {
-          setView('student');
-          const sid = userData.studentId || userData.uid;
-          setSelectedStudentId(sid);
-        } else if (userData.role === 'admin') setView('admin');
-      } catch (e) { localStorage.removeItem('lexis_user'); }
-    }
-    setAuthLoading(false);
+        const res = await apiFetch('/api/auth/me');
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) applyUser(data.user);
+        } else {
+          clearSession();
+        }
+      } catch (e) {
+        // 401：apiFetch 已经清掉本地状态；网络异常：先用本地缓存的身份顶一下
+        const cached = getStoredUser();
+        if (cached) applyUser(cached);
+      } finally {
+        setAuthLoading(false);
+      }
+    })();
+
+    return () => setUnauthorizedHandler(null);
   }, []);
 
   useEffect(() => {
-    if (user?.role === 'teacher') {
-      fetch(`/api/students?teacher_id=${user.uid}`)
-        .then(res => res.ok ? res.json() : [])
-        .then(data => {
-          if (Array.isArray(data)) {
-            setStudents(data.map((s: any) => ({
-              dbId: s.id,
-              id: s.student_id || 'N/A',
-              name: s.name,
-              choice: s.choice || 0,
-              modernReading: s.modern_reading || 0,
-              classicReading: s.classic_reading || 0,
-              nonLinear: s.non_linear || 0,
-              dictation: s.dictation || 0,
-              composition: s.composition || 0,
-              total: s.total || 0
-            })));
-          }
-        }).catch(() => setStudents([]));
-    } else if (user?.role === 'student' && user.studentId) {
-      fetch(`/api/students?student_id=${user.studentId}`)
-        .then(res => res.ok ? res.json() : [])
-        .then(data => {
-          if (Array.isArray(data) && data.length > 0) {
-            const s = data[0];
-            setStudents([{
-              dbId: s.id,
-              id: s.student_id || 'N/A',
-              name: s.name,
-              choice: s.choice || 0,
-              modernReading: s.modern_reading || 0,
-              classicReading: s.classic_reading || 0,
-              nonLinear: s.non_linear || 0,
-              dictation: s.dictation || 0,
-              composition: s.composition || 0,
-              total: s.total || 0,
-              teacher_id: s.teacher_id
-            }]);
-            setSelectedStudentId(s.student_id);
-            if (s.teacher_id) {
-              fetchAnalysisHistory(s.student_id, s.teacher_id);
-            }
-          }
-        }).catch(() => setStudents([]));
-    }
+    if (!user || user.role === 'admin') return;
+
+    // 拿哪个范围的数据由服务端按令牌判定：
+    // 教师 → 自己名下的班级；学生 → 只有自己那一条。前端不再传身份参数。
+    apiFetch('/api/students')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => {
+        if (!Array.isArray(data)) return;
+        const mapped = data.map((s: any) => ({
+          dbId: s.id,
+          id: s.student_id || 'N/A',
+          name: s.name,
+          choice: s.choice || 0,
+          modernReading: s.modern_reading || 0,
+          classicReading: s.classic_reading || 0,
+          nonLinear: s.non_linear || 0,
+          dictation: s.dictation || 0,
+          composition: s.composition || 0,
+          total: s.total || 0,
+          teacher_id: s.teacher_id,
+        }));
+
+        if (user.role === 'student') {
+          setStudents(mapped.length > 0 ? [mapped[0]] : []);
+          if (mapped.length > 0) setSelectedStudentId(mapped[0].id);
+        } else {
+          setStudents(mapped);
+        }
+      })
+      .catch(() => setStudents([]));
   }, [user]);
 
   useEffect(() => {
@@ -507,22 +531,20 @@ export default function App() {
         fetchScoreHistory(selectedStudentId);
         fetchMaterials(selectedStudentId);
       } else {
-        const student = students.find(s => s.id === selectedStudentId);
-        if (student?.teacher_id) {
-          fetchAnalysisHistory(selectedStudentId, student.teacher_id);
-          fetchScoreHistory(selectedStudentId);
-          fetchMaterials(selectedStudentId);
-        }
+        // 学生的可见范围由服务端把关（只能是自己），这里不必再看 teacher_id——
+        // 否则名单里缺 teacher_id 的学生会什么都加载不出来
+        fetchAnalysisHistory(selectedStudentId);
+        fetchScoreHistory(selectedStudentId);
+        fetchMaterials(selectedStudentId);
       }
     }
   }, [selectedStudentId, user, students]);
 
-  const fetchAnalysisHistory = async (studentId: string, teacherId?: string) => {
+  const fetchAnalysisHistory = async (studentId: string, _teacherId?: string) => {
     if (!studentId) return;
-    const tId = teacherId || user?.uid;
-    if (!tId) return;
     try {
-      const res = await fetch(`/api/history?studentId=${encodeURIComponent(studentId)}&teacherId=${encodeURIComponent(tId)}`);
+      // teacherId 不用再传：服务端按令牌里的身份决定能看到哪些记录
+      const res = await apiFetch(`/api/history?studentId=${encodeURIComponent(studentId)}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setAnalysisHistory(data);
@@ -532,7 +554,7 @@ export default function App() {
 
   const fetchScoreHistory = async (studentId: string) => {
     try {
-      const res = await fetch(`/api/students?student_id=${encodeURIComponent(studentId)}&history=true`);
+      const res = await apiFetch(`/api/students?student_id=${encodeURIComponent(studentId)}&history=true`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setScoreHistory(data);
@@ -542,7 +564,7 @@ export default function App() {
 
   const fetchMaterials = async (studentId: string) => {
     try {
-      const res = await fetch(`/api/materials?student_id=${encodeURIComponent(studentId)}`);
+      const res = await apiFetch(`/api/materials?student_id=${encodeURIComponent(studentId)}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setMaterials(data);
@@ -553,7 +575,7 @@ export default function App() {
   const saveMaterial = async (content: string, theme: string, sourceTitle: string) => {
     if (!selectedStudentId) return;
     try {
-      const res = await fetch('/api/materials', {
+      const res = await apiFetch('/api/materials', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -572,7 +594,8 @@ export default function App() {
 
   const deleteMaterial = async (id: number) => {
     try {
-      const res = await fetch(`/api/materials?id=${id}&student_id=${encodeURIComponent(selectedStudentId || '')}`, { method: 'DELETE' });
+      // 归属校验交给服务端（它按数据库里的记录判定），前端不再自己声明 student_id
+      const res = await apiFetch(`/api/materials?id=${id}`, { method: 'DELETE' });
       if (res.ok) {
         setMaterials(prev => prev.filter(m => m.id !== id));
       }
@@ -618,8 +641,12 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    // 先在服务端把这条会话作废。只清浏览器本地是没用的——
+    // 令牌在有效期内仍然能调用接口，必须让服务端也把它删掉。
+    apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    clearSession();
     setUser(null);
-    localStorage.removeItem('lexis_user');
+    setStudents([]);
     setView('teacher');
   };
 
@@ -631,16 +658,16 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/students', {
+      const res = await apiFetch('/api/students', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        // 归属教师由服务端按令牌写入，不再由前端声明 teacher_id
         body: JSON.stringify({
-          students: [{ ...student, id: sid, name: sname }],
-          teacher_id: user?.uid
+          students: [{ ...student, id: sid, name: sname }]
         })
       });
       if (res.ok) {
-        const r = await fetch(`/api/students?teacher_id=${user?.uid}`);
+        const r = await apiFetch('/api/students');
         const data = await r.json();
         if (Array.isArray(data)) {
           setStudents(data.map((s: any) => ({
@@ -671,7 +698,7 @@ export default function App() {
   const handleDeleteStudent = async (dbId: number) => {
     if (window.confirm('确定要删除该学生成绩吗？此操作不可撤销。')) {
       try {
-        const res = await fetch(`/api/students?id=${dbId}&teacher_id=${user?.uid}`, {
+        const res = await apiFetch(`/api/students?id=${dbId}`, {
           method: 'DELETE'
         });
         if (res.ok) {
@@ -710,7 +737,7 @@ export default function App() {
   const generateAIAnalysis = async (student: Student) => {
     setIsGenerating(true);
     try {
-      const res = await fetch('/api/analyze_student', {
+      const res = await apiFetch('/api/analyze_student', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student })
@@ -732,14 +759,13 @@ export default function App() {
     if (!essayTitle.trim() || essayImages.length === 0) return;
     setIsAnalyzingEssay(true);
     try {
-      const teacherId = user?.role === 'teacher' ? user.uid : (selectedStudent.teacher_id || user?.uid || 'system');
+      // 只告诉服务端"要批阅哪个学生"；批阅人是谁、记录归谁，由服务端按令牌决定
       const formData = new FormData();
       formData.append('title', essayTitle);
       formData.append('studentId', selectedStudent.id || 'N/A');
-      formData.append('teacherId', teacherId);
       formData.append('images', JSON.stringify(essayImages));
 
-      const res = await fetch('/api/analyze_essay', { method: 'POST', body: formData });
+      const res = await apiFetch('/api/analyze_essay', { method: 'POST', body: formData });
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: "阅卷失败 (服务器错误)" }));
@@ -767,7 +793,7 @@ export default function App() {
     setActiveAction('essay');
     setPreGeneratedAudio(null);
     try {
-      const res = await fetch('/api/upgrade_essay', {
+      const res = await apiFetch('/api/upgrade_essay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: essayAnalysis.title, content: essayAnalysis.analysis })
@@ -833,7 +859,7 @@ export default function App() {
     setActiveAction('practice');
     setPracticeData(null);
     try {
-      const res = await fetch('/api/generate_practice', {
+      const res = await apiFetch('/api/generate_practice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student: selectedStudent })
@@ -882,7 +908,7 @@ export default function App() {
     textToRead = textToRead.replace(/[#*`]/g, '').substring(0, 2000);
 
     try {
-      const res = await fetch('/api/tts', {
+      const res = await apiFetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: textToRead })
@@ -944,7 +970,7 @@ export default function App() {
     textToRead = textToRead.replace(/[#*`]/g, '').substring(0, 2000);
 
     try {
-      const res = await fetch('/api/tts', {
+      const res = await apiFetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: textToRead })
@@ -1102,16 +1128,15 @@ export default function App() {
         }).filter(Boolean) as Student[];
 
         if (newStudents.length > 0) {
-          fetch('/api/students', {
+          apiFetch('/api/students', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              students: newStudents,
-              teacher_id: user?.uid
+              students: newStudents
             })
           }).then(async res => {
             if (res.ok) {
-              fetch(`/api/students?teacher_id=${user?.uid}`)
+              apiFetch('/api/students')
                 .then(r => r.json())
                 .then(data => {
                   if (Array.isArray(data)) {
@@ -1211,13 +1236,11 @@ export default function App() {
   );
 
   if (!user) return <Auth onAuthSuccess={(userData) => {
+    // 令牌已在 Auth 组件里存好，这里只负责切换界面
     setUser(userData);
-    localStorage.setItem('lexis_user', JSON.stringify(userData));
     if (userData.role === 'student') {
       setView('student');
-      const sid = userData.studentId || userData.uid;
-      setSelectedStudentId(sid);
-      fetchAnalysisHistory(sid, userData.uid);
+      setSelectedStudentId(userData.studentId || userData.uid);
     } else if (userData.role === 'admin') setView('admin');
     else setView('teacher');
   }} />;

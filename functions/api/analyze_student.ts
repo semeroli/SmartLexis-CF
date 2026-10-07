@@ -1,3 +1,5 @@
+import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
+
 interface StudentInput {
   name: string;
   choice: number;
@@ -9,39 +11,26 @@ interface StudentInput {
   total: number;
 }
 
-// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
-const ALLOWED_ORIGINS = [
-  "https://smartlexis-cf.pages.dev",
-  "http://localhost:5173",
-  "http://localhost:8788",
-];
-function corsHeadersFor(request: Request): Record<string, string> {
-  const origin = request.headers.get("Origin") || "";
-  if (!ALLOWED_ORIGINS.includes(origin)) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Vary": "Origin",
-  };
-}
+// 智能学情分析。这个接口会消耗 AI 额度，必须登录后才能调用——
+// 否则任何人都能拿它当免费的 AI 代理刷额度。
 
-export const onRequestOptions: PagesFunction = (context) =>
-  new Response(null, { headers: corsHeadersFor(context.request) });
+export const onRequestOptions = (context: any) =>
+  new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
 
-export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = async (context) => {
+export async function onRequestPost(context: any) {
   const { request, env } = context;
+  const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    const body = await request.json<{ student: StudentInput }>();
-    const { student } = body;
+    await requireUser(env, request);
+
+    const body: any = await request.json().catch(() => ({}));
+    const student: StudentInput = body.student;
+    if (!student) return jsonResponse({ error: "缺少学生数据" }, 400, cors);
 
     const apiKey = env.MODELSCOPE_API_KEY;
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ error: "MODELSCOPE_API_KEY is missing" }),
-        { status: 500, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-      );
+      return jsonResponse({ error: "MODELSCOPE_API_KEY is missing" }, 500, cors);
     }
 
     const prompt = `你是一位资深的语文教育专家。请根据以下学生的考试数据进行深度学情分析，并给出具体的提升建议。
@@ -82,22 +71,13 @@ export const onRequestPost: PagesFunction<{ MODELSCOPE_API_KEY: string }> = asyn
 
     if (!res.ok) {
       console.error("ModelScope error:", data);
-      return new Response(
-        JSON.stringify({ error: "ModelScope API error", detail: data }),
-        { status: 500, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-      );
+      return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
     }
 
     const analysis = data?.choices?.[0]?.message?.content ?? "分析失败";
 
-    return new Response(
-      JSON.stringify({ status: "ok", analysis }),
-      { headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-    );
+    return jsonResponse({ status: "ok", analysis }, 200, cors);
   } catch (err: any) {
-    return new Response(
-      JSON.stringify({ error: err.message }),
-      { status: 500, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
-    );
+    return errorResponse(err, request);
   }
-};
+}

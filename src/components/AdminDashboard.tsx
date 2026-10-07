@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { apiFetch } from '../lib/api';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -29,7 +30,8 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
 
   const loadStudents = async () => {
     try {
-      const res = await fetch('/api/students?is_admin=true');
+      // 不再传 ?is_admin=true：服务端按令牌里的角色判定，前端说了不算
+      const res = await apiFetch('/api/students');
       if (res.ok) {
         const data = await res.json();
         // 确保每个学生都有 id，如果没有则尝试使用 student_id 作为后备（虽然数据库应该有 id）
@@ -47,7 +49,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
     }
     if (window.confirm('确定要删除该学生成绩吗？')) {
       try {
-        const res = await fetch(`/api/students?id=${id}&is_admin=true`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/students?id=${id}`, { method: 'DELETE' });
         if (res.ok) {
           loadStudents();
         } else {
@@ -63,7 +65,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
   const loadData = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/admin/users');
+      const response = await apiFetch('/api/admin/users');
       if (response.ok) {
         const users = await response.json();
         if (Array.isArray(users)) {
@@ -84,9 +86,8 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
   };
 
   const clearAllData = () => {
-    if (window.confirm('确定要清除所有本地存储的数据吗？这将删除所有注册用户和历史记录。')) {
-      localStorage.clear();
-      alert('本地存储已清除，请重新登录。');
+    if (window.confirm('确定要退出登录吗？服务端会把当前会话作废。')) {
+      // 交给上层统一退出：它会在服务端把会话删掉，而不只是清浏览器本地
       onLogout();
     }
   };
@@ -94,7 +95,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
   const deleteUser = async (uid: string) => {
     if (window.confirm(`确定要删除该用户吗？`)) {
       try {
-        const response = await fetch(`/api/admin/users?uid=${uid}`, { method: 'DELETE' });
+        const response = await apiFetch(`/api/admin/users?uid=${uid}`, { method: 'DELETE' });
         if (response.ok) {
           loadData();
         } else {
