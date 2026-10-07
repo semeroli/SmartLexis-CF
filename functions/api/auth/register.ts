@@ -1,3 +1,7 @@
+// 安全：本站页面调用本接口都是同源请求，不需要、也不下发任何跨域许可头。
+// 显式处理预检，避免平台默认的 405 响应附带上 Access-Control-Allow-Origin: *。
+export const onRequestOptions = () => new Response(null, { status: 204 });
+
 export async function onRequestPost(context) {
   const { request, env } = context;
   try {
