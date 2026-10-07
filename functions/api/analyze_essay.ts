@@ -1,11 +1,22 @@
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
+const ALLOWED_ORIGINS = [
+  "https://smartlexis-cf.pages.dev",
+  "http://localhost:5173",
+  "http://localhost:8788",
+];
+function corsHeadersFor(request: Request): Record<string, string> {
+  const origin = request.headers.get("Origin") || "";
+  if (!ALLOWED_ORIGINS.includes(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Vary": "Origin",
+  };
+}
 
-export async function onRequestOptions() {
-  return new Response(null, { headers: corsHeaders });
+export async function onRequestOptions(context: any) {
+  return new Response(null, { headers: corsHeadersFor(context.request) });
 }
 
 export async function onRequestPost(context: any) {
@@ -19,7 +30,7 @@ export async function onRequestPost(context: any) {
         error: "AGNES_API_KEY 未配置，请在 Cloudflare Pages 环境变量中设置" 
       }), {
         status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
       });
     }
 
@@ -57,7 +68,7 @@ export async function onRequestPost(context: any) {
     if (!imagesJson) {
       return new Response(JSON.stringify({ error: "缺少作文图片" }), {
         status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
       });
     }
 
@@ -67,7 +78,7 @@ export async function onRequestPost(context: any) {
     } catch (e) {
       return new Response(JSON.stringify({ error: "图片数据格式错误" }), {
         status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
       });
     }
 
@@ -77,7 +88,7 @@ export async function onRequestPost(context: any) {
     if (safeImages.length === 0) {
       return new Response(JSON.stringify({ error: "未提供有效图片" }), {
         status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
       });
     }
 
@@ -162,7 +173,7 @@ export async function onRequestPost(context: any) {
           error: `agnes-ai API 错误 (${res.status})`, 
           detail: errText 
         }),
-        { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders } }
+        { status: 502, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
       );
     }
 
@@ -175,7 +186,7 @@ export async function onRequestPost(context: any) {
       console.error("agnes-ai returned empty content:", JSON.stringify(data));
       return new Response(
         JSON.stringify({ error: "agnes-ai 返回空内容", detail: data }),
-        { status: 502, headers: { "Content-Type": "application/json", ...corsHeaders } }
+        { status: 502, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
       );
     }
 
@@ -254,7 +265,7 @@ export async function onRequestPost(context: any) {
         analysis_json: JSON.stringify(result),
         date
       }),
-      { headers: { "Content-Type": "application/json", ...corsHeaders } }
+      { headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
     );
 
   } catch (err: any) {
@@ -263,7 +274,7 @@ export async function onRequestPost(context: any) {
     if (err.name === "AbortError") {
       return new Response(JSON.stringify({ error: "阅卷超时（60秒），请稍后重试" }), {
         status: 504,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
       });
     }
     
@@ -272,7 +283,7 @@ export async function onRequestPost(context: any) {
       stack: err.stack 
     }), {
       status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
+      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
     });
   }
 }

@@ -1,7 +1,11 @@
 export async function onRequestPost(context) {
   const { request, env } = context;
   try {
-    const { email, password, name, role, studentId } = await request.json();
+    const payload: any = await request.json();
+    const { email, password, name, studentId } = payload;
+    // 安全加固：注册角色由服务端强制白名单，禁止客户端自封管理员(admin)。
+    // 旧代码直接信任前端传来的 role，任何人 POST {"role":"admin"} 即可创建管理员账号。
+    const role: string = payload.role === "teacher" ? "teacher" : "student";
 
     // 确保表存在
     await env.DB.prepare(`

@@ -1,11 +1,22 @@
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
-};
+// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
+const ALLOWED_ORIGINS = [
+  "https://smartlexis-cf.pages.dev",
+  "http://localhost:5173",
+  "http://localhost:8788",
+];
+function corsHeadersFor(request: Request): Record<string, string> {
+  const origin = request.headers.get("Origin") || "";
+  if (!ALLOWED_ORIGINS.includes(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Vary": "Origin",
+  };
+}
 
-export async function onRequestOptions() {
-  return new Response(null, { headers: corsHeaders });
+export async function onRequestOptions(context: any) {
+  return new Response(null, { headers: corsHeadersFor(context.request) });
 }
 
 export async function onRequestPost(context: any) {
@@ -18,7 +29,7 @@ export async function onRequestPost(context: any) {
     if (keys.length === 0) {
       return new Response(JSON.stringify({ error: "MODELSCOPE_API_KEY 未配置" }), {
         status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
       });
     }
     const apiKey = keys[Math.floor(Math.random() * keys.length)];
@@ -81,25 +92,25 @@ ${content}
     if (!res.ok) {
       return new Response(
         JSON.stringify({ error: "ModelScope API error", detail: data }),
-        { status: 500, headers: { "Content-Type": "application/json", ...corsHeaders } }
+        { status: 500, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
       );
     }
 
     const text = data?.choices?.[0]?.message?.content ?? "升格失败，请稍后重试";
 
     return new Response(JSON.stringify({ text }), {
-      headers: { "Content-Type": "application/json", ...corsHeaders },
+      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
     });
   } catch (err: any) {
     if (err.name === "AbortError") {
       return new Response(
         JSON.stringify({ error: "升格超时，请稍后重试" }),
-        { status: 504, headers: { "Content-Type": "application/json", ...corsHeaders } }
+        { status: 504, headers: { "Content-Type": "application/json", ...corsHeadersFor(request) } }
       );
     }
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
+      headers: { "Content-Type": "application/json", ...corsHeadersFor(request) },
     });
   }
 }

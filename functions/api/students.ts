@@ -1,13 +1,24 @@
+// 仅允许本站域名（含本地开发端口）跨域调用，替代原先对全网开放的 "*"
+const ALLOWED_ORIGINS = [
+  "https://smartlexis-cf.pages.dev",
+  "http://localhost:5173",
+  "http://localhost:8788",
+];
+
 export async function onRequest(context: any) {
   const { env, request } = context;
   const method = request.method;
 
-  // CORS
-  const corsHeaders = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-  };
+  // CORS：按请求来源动态判定，非白名单来源不下发跨域许可头
+  const reqOrigin = request.headers.get("Origin") || "";
+  const corsHeaders: Record<string, string> = ALLOWED_ORIGINS.includes(reqOrigin)
+    ? {
+        "Access-Control-Allow-Origin": reqOrigin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Vary": "Origin",
+      }
+    : {};
   if (method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
