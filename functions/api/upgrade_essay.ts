@@ -1,6 +1,6 @@
-import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
+import { checkAiQuota, corsHeadersFor, errorResponse, jsonResponse, recordAiUsage, requireUser } from "../../shared/api";
 
-// 作文升格。会消耗 AI 额度，必须登录。
+// 作文升格。会消耗 AI 额度，必须登录 + 过每日配额。
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
@@ -10,9 +10,17 @@ export async function onRequestPost(context: any) {
   const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    await requireUser(env, request);
+    const user = await requireUser(env, request);
+    await checkAiQuota(env, user, "upgrade");
 
-    const { title, content } = await request.json();
+    const body: any = await request.json().catch(() => ({}));
+    const title = body.title || "未命名作文";
+    const content = typeof body.content === "string" ? body.content.trim() : "";
+
+    // 没有原文就升格不了。前端本该拦住，这里再兜一道，避免把空内容丢给 AI 白烧额度。
+    if (!content) {
+      return jsonResponse({ error: "缺少作文原文，请先完成深度诊断再升格" }, 400, cors);
+    }
 
     const keys = (env.MODELSCOPE_API_KEY || "").split(",").map((k: string) => k.trim()).filter(Boolean);
     if (keys.length === 0) {
@@ -73,13 +81,20 @@ ${content}
     });
 
     clearTimeout(timeout);
-    const data = await res.json();
+    const data = await res.json().catch(() => null);
 
     if (!res.ok) {
       return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
     }
 
-    const text = data?.choices?.[0]?.message?.content ?? "升格失败，请稍后重试";
+    const text = data?.choices?.[0]?.message?.content;
+    if (!text || !String(text).trim()) {
+      console.error("作文升格返回空内容:", JSON.stringify(data).slice(0, 200));
+      return jsonResponse({ error: "AI 没有返回升格内容，请稍后重试" }, 502, cors);
+    }
+
+    // 确认内容可用后才记一次用量
+    await recordAiUsage(env, user, "upgrade");
 
     return jsonResponse({ text }, 200, cors);
   } catch (err: any) {

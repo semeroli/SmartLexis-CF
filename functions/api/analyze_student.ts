@@ -1,4 +1,4 @@
-import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
+import { checkAiQuota, corsHeadersFor, errorResponse, jsonResponse, recordAiUsage, requireUser } from "../../shared/api";
 
 interface StudentInput {
   name: string;
@@ -22,7 +22,9 @@ export async function onRequestPost(context: any) {
   const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    await requireUser(env, request);
+    const user = await requireUser(env, request);
+    // 先过每日配额闸门，再花钱调 AI
+    await checkAiQuota(env, user, "analyze");
 
     const body: any = await request.json().catch(() => ({}));
     const student: StudentInput = body.student;
@@ -74,7 +76,15 @@ export async function onRequestPost(context: any) {
       return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
     }
 
-    const analysis = data?.choices?.[0]?.message?.content ?? "分析失败";
+    const analysis = data?.choices?.[0]?.message?.content;
+    if (!analysis) {
+      // 别把"分析失败"当成分析结果塞进报告里——用户会以为那就是 AI 的结论
+      console.error("ModelScope 返回空内容:", JSON.stringify(data).slice(0, 200));
+      return jsonResponse({ error: "AI 没有返回分析内容，请稍后重试" }, 502, cors);
+    }
+
+    // 只有真的拿到内容才记一次用量
+    await recordAiUsage(env, user, "analyze");
 
     return jsonResponse({ status: "ok", analysis }, 200, cors);
   } catch (err: any) {

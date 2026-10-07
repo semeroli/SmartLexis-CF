@@ -1,16 +1,88 @@
-import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
+import {
+  checkAiQuota,
+  corsHeadersFor,
+  errorResponse,
+  jsonResponse,
+  recordAiUsage,
+  requireUser,
+} from "../../shared/api";
 
-// 专项练习生成。同样会消耗 AI 额度，必须登录。
+// 专项练习生成。会消耗 AI 额度，必须登录 + 过每日配额。
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
+
+/**
+ * 把模型输出的"差不多是 JSON"变成真 JSON。
+ * 模型经常把 JSON 包在 ```json 围栏里，或前后附一句"好的，以下是练习："——
+ * 直接 JSON.parse 会失败，前端拿到的是"生成失败"这种没头没脑的提示。
+ */
+function parseLooseJson(raw: string): any | null {
+  const trimmed = raw.trim();
+  const unfenced = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  const candidates = [unfenced];
+  const a = unfenced.indexOf("{");
+  const b = unfenced.lastIndexOf("}");
+  if (a >= 0 && b > a) candidates.push(unfenced.slice(a, b + 1));
+
+  for (const c of candidates) {
+    try {
+      const o = JSON.parse(c);
+      if (o && typeof o === "object") return o;
+    } catch (_) { /* 换下一个候选 */ }
+  }
+  return null;
+}
+
+const str = (v: any, fallback = ""): string => (typeof v === "string" ? v : fallback);
+
+/**
+ * 补齐字段并保证类型正确。
+ * 关键点：`questions` / `options` 在前端是直接 .map() 的，
+ * 模型少给一个字段就会让整个页面白屏 —— 所以这里必须兜住。
+ */
+function normalizePractice(p: any) {
+  const questions = Array.isArray(p.questions)
+    ? p.questions
+        .filter((q: any) => q && typeof q === "object")
+        .map((q: any, i: number) => ({
+          id: Number.isFinite(Number(q.id)) ? Number(q.id) : i + 1,
+          type: str(q.type, "choice") || "choice",
+          content: str(q.content),
+          options: Array.isArray(q.options) ? q.options.filter((o: any) => typeof o === "string") : [],
+          answer: str(q.answer),
+          analysis: str(q.analysis),
+        }))
+    : [];
+
+  const writing_task = p.writing_task && typeof p.writing_task === "object"
+    ? {
+        title: str(p.writing_task.title),
+        requirement: str(p.writing_task.requirement),
+        guidance: str(p.writing_task.guidance),
+      }
+    : null;
+
+  return {
+    title: str(p.title, "专项提分练习") || "专项提分练习",
+    introduction: str(p.introduction),
+    reading_material: str(p.reading_material),
+    questions,
+    writing_task,
+  };
+}
 
 export async function onRequestPost(context: any) {
   const { request, env } = context;
   const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    await requireUser(env, request);
+    const user = await requireUser(env, request);
+    await checkAiQuota(env, user, "practice");
 
     const body: any = await request.json().catch(() => ({}));
     const s = body.student || {};
@@ -82,12 +154,28 @@ export async function onRequestPost(context: any) {
       return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
     }
 
-    const practice = data?.choices?.[0]?.message?.content ?? "{}";
+    const raw = data?.choices?.[0]?.message?.content || "";
+    if (!raw.trim()) {
+      console.error("专项练习返回空内容");
+      return jsonResponse({ error: "AI 没有返回练习内容，请重新生成一次" }, 502, cors);
+    }
 
-    // 直接返回 AI 生成的 JSON 字符串
-    return new Response(practice, {
-      headers: { "Content-Type": "application/json", ...cors },
-    });
+    const parsed = parseLooseJson(raw);
+    if (!parsed) {
+      console.error("专项练习返回的不是合法 JSON:", raw.slice(0, 200));
+      return jsonResponse({ error: "AI 返回的练习格式异常，请重新生成一次" }, 502, cors);
+    }
+
+    const practice = normalizePractice(parsed);
+    if (!practice.questions.length && !practice.writing_task) {
+      console.error("专项练习内容为空:", JSON.stringify(practice).slice(0, 200));
+      return jsonResponse({ error: "AI 返回的练习内容不完整，请重新生成一次" }, 502, cors);
+    }
+
+    // 确认内容可用后才记一次用量
+    await recordAiUsage(env, user, "practice");
+
+    return jsonResponse(practice, 200, cors);
   } catch (err: any) {
     return errorResponse(err, request);
   }

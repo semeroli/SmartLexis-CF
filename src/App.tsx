@@ -21,7 +21,7 @@ import { jsPDF } from 'jspdf';
 // html2canvas-pro 是 html2canvas 的替代版：支持 Tailwind v4 输出的 oklch / oklab / color-mix 颜色。
 // 原来的 html2canvas@1.4.1 不认识这些颜色格式，遇到就抛异常 —— 所以"导出 PDF"必然失败。
 import html2canvas from 'html2canvas-pro';
-import { cn } from './lib/utils';
+import { cn, formatDay } from './lib/utils';
 import {
   apiFetch,
   clearSession,
@@ -62,6 +62,8 @@ interface WritingRecord {
   studentId: string;
   title: string;
   analysis: string;
+  /** 作文原文：阅卷接口会回传，历史记录接口暂不返回，所以是可选的 */
+  essay_text?: string;
   date: string;
 }
 
@@ -158,7 +160,8 @@ const GrowthCurve = ({ history }: { history: ScoreHistory[] }) => {
   if (!history || history.length === 0) return null;
 
   const data = history.map(h => ({
-    date: new Date(h.created_at).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' }),
+    // 用 formatDay 而不是 new Date：Safari 解析不了 "2026-07-03 08:30:56"
+    date: formatDay(h.created_at, { month: 'short', day: 'numeric' }),
     total: h.total,
     composition: h.composition,
     reading: h.modern_reading + h.classic_reading
@@ -307,7 +310,7 @@ const ClassHeatmap = ({ students }: { students: Student[] }) => {
 
   const types = [
     { label: '选择题', key: 'choice', max: 30 },
-    { label: '现代文阅读', key: 'modernReading', max: 35 },
+    { label: '现代文阅读', key: 'modernReading', max: 30 },
     { label: '文言文阅读', key: 'classicReading', max: 20 },
     { label: '非连续性', key: 'nonLinear', max: 10 },
     { label: '默写填空', key: 'dictation', max: 10 },
@@ -388,7 +391,7 @@ const MaterialLibrary = ({ materials, onDelete }: { materials: WritingMaterial[]
             <p className="text-slate-700 leading-loose font-serif italic text-lg mb-6">"{m.content}"</p>
             <div className="flex items-center justify-between text-[10px] font-black text-slate-400 uppercase tracking-widest">
               <span>来源: {m.source_title}</span>
-              <span>{new Date(m.created_at).toLocaleDateString()}</span>
+              <span>{formatDay(m.created_at)}</span>
             </div>
           </motion.div>
         )) : (
@@ -667,6 +670,7 @@ export default function App() {
         })
       });
       if (res.ok) {
+        const saved: any = await res.json().catch(() => ({}));
         const r = await apiFetch('/api/students');
         const data = await r.json();
         if (Array.isArray(data)) {
@@ -686,8 +690,13 @@ export default function App() {
         }
         setIsEditModalOpen(false);
         setEditingStudent(null);
+        // 值没变时服务端不会写历史，如实告诉老师，避免她以为白点了
+        if (saved && saved.unchanged && !saved.updated && !saved.inserted) {
+          alert("成绩与原来一致，未产生新的记录。");
+        }
       } else {
-        alert("保存失败，请重试");
+        const errData = await res.json().catch(() => ({ error: '服务器错误' }));
+        alert(`保存失败：${errData.error || '请稍后重试'}`);
       }
     } catch (err) {
       console.error(err);
@@ -796,7 +805,12 @@ export default function App() {
       const res = await apiFetch('/api/upgrade_essay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: essayAnalysis.title, content: essayAnalysis.analysis })
+        // 优先送**作文原文**。原来送的是"分析全文"（含标题、评分、评语、建议），
+        // 等于让模型对着一堆评语去升格作文，出来的范文自然不对味。
+        body: JSON.stringify({
+          title: essayAnalysis.title,
+          content: essayAnalysis.essay_text || essayAnalysis.analysis
+        })
       });
 
       if (!res.ok) {
@@ -1135,6 +1149,7 @@ export default function App() {
               students: newStudents
             })
           }).then(async res => {
+            const saved: any = await res.json().catch(() => ({}));
             if (res.ok) {
               apiFetch('/api/students')
                 .then(r => r.json())
@@ -1154,10 +1169,15 @@ export default function App() {
                     })));
                   }
                 });
-              alert(`成功导入并保存 ${newStudents.length} 名学生成绩！`);
+              // 按服务端返回的实际结果提示：重复导入同一份表格时，
+              // 值没变的不会写历史，这里如实说"无变化 N 条"，老师才不会被误导
+              const parts: string[] = [];
+              if (saved.inserted) parts.push(`新增 ${saved.inserted} 条`);
+              if (saved.updated) parts.push(`更新 ${saved.updated} 条`);
+              if (saved.unchanged) parts.push(`无变化 ${saved.unchanged} 条`);
+              alert(`导入完成：${parts.length ? parts.join('，') : '没有需要写入的数据'}。`);
             } else {
-              const errData = await res.json().catch(() => ({}));
-              alert(`导入失败: ${errData.error || '服务器错误，请检查网络或联系管理员'}`);
+              alert(`导入失败: ${saved.error || '服务器错误，请检查网络或联系管理员'}`);
             }
           }).catch(err => {
             console.error("Upload error:", err);
@@ -1527,7 +1547,7 @@ export default function App() {
                         <div className="w-12 h-12 bg-emerald-100 rounded-[20px] flex items-center justify-center"><PenTool className="w-6 h-6 text-emerald-600" /></div>
                         <div><h3 className="text-xl font-bold text-slate-900">AI 作文深度诊断</h3><p className="text-xs text-slate-500 font-bold">多维度自动阅卷与修改建议</p></div>
                       </div>
-                      {essayAnalysis && <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest"><History className="w-4 h-4" /> {new Date(essayAnalysis.date).toLocaleDateString()}</div>}
+                      {essayAnalysis && <div className="flex items-center gap-2 text-[10px] font-black text-slate-400 uppercase tracking-widest"><History className="w-4 h-4" /> {formatDay(essayAnalysis.date)}</div>}
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
                       <div className="space-y-8">
@@ -1660,7 +1680,7 @@ export default function App() {
                         <div key={record.id} className="p-6 bg-slate-50 rounded-2xl border border-slate-100 hover:border-indigo-100 transition-all">
                           <div className="flex justify-between items-start mb-3">
                             <h4 className="font-bold text-slate-900">{record.title}</h4>
-                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{new Date(record.date).toLocaleDateString()}</span>
+                            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{formatDay(record.date)}</span>
                           </div>
                           <div className="prose prose-sm max-w-none text-slate-600 leading-relaxed line-clamp-3">
                             <ReactMarkdown>{record.analysis}</ReactMarkdown>

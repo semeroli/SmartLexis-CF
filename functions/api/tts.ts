@@ -1,7 +1,7 @@
 import { GoogleGenAI, Modality } from "@google/genai";
-import { corsHeadersFor, errorResponse, jsonResponse, requireUser } from "../../shared/api";
+import { checkAiQuota, corsHeadersFor, errorResponse, jsonResponse, recordAiUsage, requireUser } from "../../shared/api";
 
-// 语音合成（朗读范文）。会消耗 Gemini 额度，必须登录。
+// 语音合成（朗读范文）。会消耗 Gemini 额度，必须登录 + 过每日配额。
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request, "POST, OPTIONS") });
@@ -11,9 +11,14 @@ export async function onRequestPost(context: any) {
   const cors = corsHeadersFor(request, "POST, OPTIONS");
 
   try {
-    await requireUser(env, request);
+    const user = await requireUser(env, request);
+    await checkAiQuota(env, user, "tts");
 
-    const { text } = await request.json();
+    const body: any = await request.json().catch(() => ({}));
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    if (!text) {
+      return jsonResponse({ error: "缺少要朗读的文字" }, 400, cors);
+    }
 
     if (!env.GEMINI_API_KEY) {
       return jsonResponse({ error: "未配置 GEMINI_API_KEY 环境变量" }, 500, cors);
@@ -51,6 +56,9 @@ export async function onRequestPost(context: any) {
     if (!base64Audio) {
       throw new Error("Gemini 未返回音频数据");
     }
+
+    // 确认真的拿到音频后才记一次用量
+    await recordAiUsage(env, user, "tts");
 
     return jsonResponse({ audio: base64Audio }, 200, cors);
   } catch (err: any) {

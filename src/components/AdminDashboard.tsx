@@ -7,6 +7,7 @@ import {
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { apiFetch } from '../lib/api';
+import { formatDay } from '../lib/utils';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -220,7 +221,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-xs text-slate-400">
-                          {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '未知'}
+                          {u.createdAt ? formatDay(u.createdAt) : '未知'}
                         </td>
                       <td className="px-6 py-4 text-right">
                         <button 

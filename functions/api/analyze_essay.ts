@@ -1,10 +1,12 @@
 import {
   AuthError,
   assertStudentAccess,
+  checkAiQuota,
   corsHeadersFor,
   errorResponse,
   isPlaceholderStudentId,
   jsonResponse,
+  recordAiUsage,
   requireUser,
   resolveOwnerTeacherId,
 } from "../../shared/api";
@@ -97,6 +99,9 @@ export async function onRequestPost(context: any) {
         error: "AGNES_API_KEY 未配置，请在 Cloudflare Pages 环境变量中设置",
       }, 500, cors);
     }
+
+    // 真正开始烧额度之前，先过每日配额闸门
+    await checkAiQuota(env, user, "essay");
 
     // 构造 OpenAI 格式的消息内容
     const contentParts: any[] = [
@@ -196,18 +201,26 @@ export async function onRequestPost(context: any) {
     try {
       result = JSON.parse(raw);
     } catch (e) {
+      // 以前这里会把"格式异常"当成一份分析结果返回 200 —— 老师看到的就是一张
+      // 满屏 "?" 的空报告，还会被当成 AI 的结论。宁可明确报错让她重试一次。
       console.error("JSON parse error:", raw.substring(0, 200));
-      result = {
-        essay_text: "",
-        score: null,
-        dimensions: {},
-        strengths: [],
-        weaknesses: [],
-        suggestions: [],
-        summary: "AI 返回格式异常",
-        raw,
-      };
+      return jsonResponse({
+        error: "AI 返回的报告格式异常（可能被截断），请重新提交一次",
+      }, 502, cors);
     }
+
+    // 连分数和原文都没有，说明这次识别基本没成功，同样不该当成结果返回
+    const hasScore = result && result.score !== null && result.score !== undefined;
+    const hasText = !!(result && typeof result.essay_text === "string" && result.essay_text.trim());
+    if (!hasScore && !hasText) {
+      console.error("作文阅卷结果为空:", JSON.stringify(result).slice(0, 200));
+      return jsonResponse({
+        error: "没能识别出作文内容或评分，请换一张更清晰的照片重试",
+      }, 502, cors);
+    }
+
+    // 到这里才算一次有效调用
+    await recordAiUsage(env, user, "essay");
 
     // 写入 D1
     const id = crypto.randomUUID();
