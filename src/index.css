@@ -1,6 +1,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+/* Markdown 排版插件：AI 诊断报告里的标题层级、项目符号、段落间距全靠它。
+   之前只写了 prose 类名但没装插件，产物 CSS 里 .prose 命中 0 次，
+   而 preflight 又把 h1-h6 字号和 ol/ul 圆点都重置掉了 —— 报告就是一片文字墙。 */
+@plugin "@tailwindcss/typography";
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Playfair Display", serif;

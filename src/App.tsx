@@ -18,7 +18,9 @@ import { motion, AnimatePresence } from 'framer-motion';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
-import html2canvas from 'html2canvas';
+// html2canvas-pro 是 html2canvas 的替代版：支持 Tailwind v4 输出的 oklch / oklab / color-mix 颜色。
+// 原来的 html2canvas@1.4.1 不认识这些颜色格式，遇到就抛异常 —— 所以"导出 PDF"必然失败。
+import html2canvas from 'html2canvas-pro';
 import { cn } from './lib/utils';
 import Auth from './components/Auth';
 import AdminDashboard from './components/AdminDashboard';
@@ -37,6 +39,16 @@ interface Student {
   total: number;
   teacher_id?: string;
 }
+
+// 成绩录入弹窗的字段标签（原来直接显示 choice / modernReading 这类英文键名，老师看不懂）
+const SCORE_INPUT_FIELDS: { key: keyof Student; label: string }[] = [
+  { key: 'choice', label: '选择题' },
+  { key: 'modernReading', label: '现代文阅读' },
+  { key: 'classicReading', label: '文言文阅读' },
+  { key: 'nonLinear', label: '非连续性文本' },
+  { key: 'dictation', label: '默写填空' },
+  { key: 'composition', label: '作文' },
+];
 
 interface WritingRecord {
   id: string;
@@ -569,17 +581,35 @@ export default function App() {
 
   const exportToPDF = async (elementId: string, filename: string) => {
     const element = document.getElementById(elementId);
-    if (!element) return;
+    if (!element) {
+      alert("没有找到要导出的内容，请稍后重试");
+      return;
+    }
 
     try {
-      const canvas = await html2canvas(element, { scale: 2 });
+      // 浏览器单张画布有大小上限，报告很长时降为 1 倍分辨率，避免截出空白图
+      const scale = element.scrollHeight * 2 > 16000 ? 1 : 2;
+      const canvas = await html2canvas(element, { scale, backgroundColor: '#ffffff' });
       const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const imgProps = pdf.getImageProperties(imgData);
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
 
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const imgProps = pdf.getImageProperties(imgData);
+      const imgHeight = (imgProps.height * pageWidth) / imgProps.width;
+
+      // 按 A4 高度切成多页：否则整份报告只会输出一页，后面的内容直接丢掉
+      let heightLeft = imgHeight;
+      let position = 0;
+      pdf.addImage(imgData, 'PNG', 0, position, pageWidth, imgHeight);
+      heightLeft -= pageHeight;
+      while (heightLeft > 0) {
+        position -= pageHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, pageWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+
       pdf.save(filename);
     } catch (err) {
       console.error("PDF Export Error:", err);
@@ -594,12 +624,18 @@ export default function App() {
   };
 
   const handleSaveStudent = async (student: Student) => {
+    const sid = (student.id || '').trim();
+    const sname = (student.name || '').trim();
+    if (!sid || !sname) {
+      alert("请填写学号和姓名");
+      return;
+    }
     try {
       const res = await fetch('/api/students', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          students: [student],
+          students: [{ ...student, id: sid, name: sname }],
           teacher_id: user?.uid
         })
       });
@@ -1350,7 +1386,20 @@ export default function App() {
                     <Search className="w-5 h-5 absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input type="text" placeholder="搜索姓名或学号..." className="pl-14 pr-6 py-4 bg-white border border-slate-200 rounded-[24px] text-sm font-bold focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none w-80 transition-all shadow-sm" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                   </div>
-                  <button onClick={() => { setEditingStudent(null); setIsEditModalOpen(true); }} className="p-4 bg-indigo-600 text-white rounded-[24px] shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all"><Users className="w-6 h-6" /></button>
+                  <button
+                    onClick={() => {
+                      // 新增学生：给一个空白草稿（没有 dbId），弹窗会切到"新增"模式
+                      setEditingStudent({
+                        id: '', name: '',
+                        choice: 0, modernReading: 0, classicReading: 0,
+                        nonLinear: 0, dictation: 0, composition: 0, total: 0,
+                      });
+                      setIsEditModalOpen(true);
+                    }}
+                    title="新增学生"
+                    aria-label="新增学生"
+                    className="p-4 bg-indigo-600 text-white rounded-[24px] shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                  ><Users className="w-6 h-6" /></button>
                 </div>
               </header>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -1630,11 +1679,40 @@ export default function App() {
               className="bg-white rounded-[32px] p-10 w-full max-w-2xl shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
-              <h3 className="text-2xl font-black text-slate-900 mb-8">编辑学生成绩</h3>
+              <h3 className="text-2xl font-black text-slate-900 mb-8">{editingStudent.dbId ? '编辑学生成绩' : '新增学生'}</h3>
+
+              {!editingStudent.dbId && (
+                <div className="mb-8">
+                  <div className="grid grid-cols-2 gap-6">
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">学号</label>
+                      <input
+                        type="text"
+                        placeholder="例如 2026007"
+                        value={editingStudent.id}
+                        onChange={(e) => setEditingStudent({ ...editingStudent, id: e.target.value })}
+                        className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-500/10"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">姓名</label>
+                      <input
+                        type="text"
+                        placeholder="学生姓名"
+                        value={editingStudent.name}
+                        onChange={(e) => setEditingStudent({ ...editingStudent, name: e.target.value })}
+                        className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm font-bold outline-none focus:ring-4 focus:ring-indigo-500/10"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs font-bold text-slate-400 mt-3">学号与姓名要和成绩表里的一致，学生才能用这个学号注册账号。</p>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-6">
-                {['choice', 'modernReading', 'classicReading', 'nonLinear', 'dictation', 'composition'].map(key => (
+                {SCORE_INPUT_FIELDS.map(({ key, label }) => (
                   <div key={key}>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">{key}</label>
+                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">{label}</label>
                     <input
                       type="number"
                       value={(editingStudent as any)[key] || 0}
