@@ -1,13 +1,17 @@
 import React, { useState } from 'react';
-import { LogIn, UserPlus, Sparkles, Loader2, AlertCircle } from 'lucide-react';
+import { LogIn, UserPlus, Sparkles, Loader2, AlertCircle, CheckCircle2, HelpCircle, ArrowLeft, Send } from 'lucide-react';
 import { saveSession } from '../lib/api';
 
 interface AuthProps {
   onAuthSuccess: (user: any) => void;
 }
 
+// 三种模式共用一个面板：登录 / 注册 / 找回密码
+type Mode = 'login' | 'register' | 'reset';
+
 export default function Auth({ onAuthSuccess }: AuthProps) {
-  const [isLogin, setIsLogin] = useState(true);
+  const [mode, setMode] = useState<Mode>('login');
+  const isLogin = mode === 'login';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -15,6 +19,16 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
   const [role, setRole] = useState<'teacher' | 'student'>('student');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // 找回密码专用：提交结果（成功文案 / 是否重复提交）
+  const [resetDone, setResetDone] = useState(false);
+  const [resetMessage, setResetMessage] = useState('');
+
+  const switchMode = (next: Mode) => {
+    setMode(next);
+    setError('');
+    setResetDone(false);
+    setResetMessage('');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,6 +74,36 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
     }
   };
 
+  // 找回密码：只提交申请，真正改密码由管理员在后台点一下才会发生
+  const handleResetRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    try {
+      const response = await fetch('/api/auth/request_reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, name })
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setError(data?.error || '提交失败，请重试');
+        return;
+      }
+      setResetMessage(data?.message || '申请已提交');
+      setResetDone(true);
+    } catch (err: any) {
+      setError('网络异常，请重试。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden bg-slate-900">
       {/* 高清背景图 */}
@@ -100,26 +144,35 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
         <div className="p-12">
           <div className="flex gap-6 mb-10 relative">
             <button 
-              onClick={() => setIsLogin(true)}
-              className={`flex-1 py-3 text-sm font-bold rounded-2xl transition-all relative z-10 ${isLogin ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => switchMode('login')}
+              className={`flex-1 py-3 text-sm font-bold rounded-2xl transition-all relative z-10 ${mode !== 'register' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
               登录
-              {isLogin && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-600 rounded-full" />}
+              {mode !== 'register' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-600 rounded-full" />}
             </button>
             <button 
-              onClick={() => setIsLogin(false)}
-              className={`flex-1 py-3 text-sm font-bold rounded-2xl transition-all relative z-10 ${!isLogin ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
+              onClick={() => switchMode('register')}
+              className={`flex-1 py-3 text-sm font-bold rounded-2xl transition-all relative z-10 ${mode === 'register' ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'}`}
             >
               注册
-              {!isLogin && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-600 rounded-full" />}
+              {mode === 'register' && <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-indigo-600 rounded-full" />}
             </button>
             <div 
-              className={`absolute top-0 h-full w-1/2 bg-indigo-50/50 rounded-2xl transition-transform duration-300 ease-out ${isLogin ? 'translate-x-0' : 'translate-x-full'}`}
+              className={`absolute top-0 h-full w-1/2 bg-indigo-50/50 rounded-2xl transition-transform duration-300 ease-out ${mode !== 'register' ? 'translate-x-0' : 'translate-x-full'}`}
             />
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            {!isLogin && (
+          <form onSubmit={mode === 'reset' ? handleResetRequest : handleSubmit} className="space-y-6">
+            {mode === 'reset' && (
+              <div className="flex items-start gap-3 p-4 bg-indigo-50/70 border border-indigo-100 rounded-2xl animate-in fade-in slide-in-from-top-2">
+                <HelpCircle className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                <p className="text-[11px] text-indigo-800 leading-relaxed font-bold">
+                  系统不发送邮件验证码。请填写<strong>注册时用的邮箱和姓名</strong>，提交后由管理员（老师）
+                  为您重置成一个临时密码，再用临时密码登录，登录后可在「修改密码」里改成自己的密码。
+                </p>
+              </div>
+            )}
+            {mode === 'register' && (
               <div className="grid grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2">
                 <div className="col-span-2">
                   <label className="block text-xs font-black text-slate-700 uppercase tracking-[0.15em] mb-2.5 ml-1">姓名 / Name</label>
@@ -170,44 +223,104 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            <div>
-              <label className="block text-xs font-black text-slate-700 uppercase tracking-[0.15em] mb-2.5 ml-1">密码 / Password</label>
-              <input 
-                type="password" 
-                required 
-                placeholder="••••••••"
-                className="w-full px-5 py-3.5 bg-white/80 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400 text-slate-900 font-bold"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
+            {mode === 'reset' && (
+              <div className="animate-in fade-in slide-in-from-top-2">
+                <label className="block text-xs font-black text-slate-700 uppercase tracking-[0.15em] mb-2.5 ml-1">姓名 / Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="注册时填写的真实姓名"
+                  className="w-full px-5 py-3.5 bg-white/80 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400 text-slate-900 font-bold"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+                <p className="mt-2 ml-1 text-[10px] text-slate-500 font-bold leading-relaxed">
+                  姓名要和注册时填的完全一致，才能通过核对。
+                </p>
+              </div>
+            )}
+            {mode !== 'reset' && (
+              <>
+                <div>
+                  <label className="block text-xs font-black text-slate-700 uppercase tracking-[0.15em] mb-2.5 ml-1">密码 / Password</label>
+                  <input 
+                    type="password" 
+                    required 
+                    placeholder="••••••••"
+                    className="w-full px-5 py-3.5 bg-white/80 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all placeholder:text-slate-400 text-slate-900 font-bold"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+                {isLogin && (
+                  <div className="text-right -mt-3">
+                    <button
+                      type="button"
+                      onClick={() => switchMode('reset')}
+                      className="text-[11px] font-bold text-slate-400 hover:text-indigo-600 transition-colors underline underline-offset-4"
+                    >
+                      忘记密码？
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {resetDone && (
+              <div className="flex items-start gap-2 text-emerald-700 bg-emerald-50 p-4 rounded-xl animate-in fade-in">
+                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-[11px] font-bold">{resetMessage}</p>
+                  <p className="text-[10px] text-emerald-600 mt-1 leading-relaxed">
+                    管理员处理后会给您一个临时密码。拿到后请尽快在「修改密码」里换成自己的密码。
+                  </p>
+                </div>
+              </div>
+            )}
 
             {error && (
               <div className="flex items-center gap-2 text-rose-500 bg-rose-50 p-3 rounded-xl animate-in shake-in">
-                <AlertCircle className="w-4 h-4" />
+                <AlertCircle className="w-4 h-4 shrink-0" />
                 <p className="text-[10px] font-bold">{error}</p>
               </div>
             )}
 
-            <button 
-              type="submit" 
-              disabled={loading}
-              className="w-full py-4 bg-[#1E293B] text-white rounded-2xl font-bold hover:bg-slate-800 transition-all flex items-center justify-center gap-3 shadow-xl shadow-slate-200 disabled:opacity-50 group"
-            >
-              {loading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : isLogin ? (
-                <>
-                  <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                  <span className="tracking-[0.3em]">开启诊断</span>
-                </>
-              ) : (
-                <>
-                  <UserPlus className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                  <span className="tracking-[0.3em]">创建卷宗</span>
-                </>
-              )}
-            </button>
+            {!resetDone && (
+              <button 
+                type="submit" 
+                disabled={loading}
+                className="w-full py-4 bg-[#1E293B] text-white rounded-2xl font-bold hover:bg-slate-800 transition-all flex items-center justify-center gap-3 shadow-xl shadow-slate-200 disabled:opacity-50 group"
+              >
+                {loading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : mode === 'reset' ? (
+                  <>
+                    <Send className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    <span className="tracking-[0.3em]">提交申请</span>
+                  </>
+                ) : isLogin ? (
+                  <>
+                    <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                    <span className="tracking-[0.3em]">开启诊断</span>
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                    <span className="tracking-[0.3em]">创建卷宗</span>
+                  </>
+                )}
+              </button>
+            )}
+
+            {mode === 'reset' && (
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="w-full flex items-center justify-center gap-2 text-[11px] font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> 返回登录
+              </button>
+            )}
           </form>
           
           <div className="mt-8 text-center">

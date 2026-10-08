@@ -181,6 +181,54 @@ export async function destroySession(env: any, request: Request): Promise<void> 
   await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
 }
 
+/** 让某个账号在**所有设备**上退出登录。改密码 / 管理员重置密码后必须调用。 */
+export async function destroyAllSessions(env: any, uid: string): Promise<void> {
+  await ensureSessionTable(env);
+  await env.DB.prepare("DELETE FROM sessions WHERE uid = ?").bind(uid).run();
+}
+
+// ── 忘记密码 / 管理员重置 ──────────────────────────────────────
+
+/**
+ * 重置申请表（懒创建，做法与 sessions 表一致，无需手工迁移）。
+ *
+ * 为什么不是「自助重置」：这个系统没有邮件服务，发不了验证码。
+ * 所以就做成「老师提交申请 → 管理员在后台点一下批准 → 拿到临时密码」。
+ * 关键点：**只有管理员批准才会真正改密码**，所以谁乱提交都拿不到账号。
+ *
+ * status: pending（待处理）/ done（已重置）/ dismissed（已忽略）
+ */
+let resetTableReady = false;
+export async function ensureResetTable(env: any): Promise<void> {
+  if (resetTableReady) return;
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS password_reset_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT DEFAULT (datetime('now','localtime')),
+      handled_at TEXT,
+      handled_by TEXT,
+      temp_password TEXT
+    )`
+  ).run();
+  resetTableReady = true;
+}
+
+/**
+ * 临时密码用的字母表：**故意剔掉 0/O、1/I/L** 这些容易看错的字符。
+ * 这个密码是要在微信里发过去、老师在手机上照着敲的，念得清、敲得对最重要。
+ */
+const TEMP_PW_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+
+export function generateTempPassword(length = 8): string {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => TEMP_PW_ALPHABET[b % TEMP_PW_ALPHABET.length]).join("");
+}
+
+
 // ── 数据范围判定 ──────────────────────────────────────────────
 
 /**

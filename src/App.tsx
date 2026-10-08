@@ -6,7 +6,7 @@ import {
   ChevronRight, BrainCircuit, Target, FileText,
   Loader2, ImageIcon, History, Square, ArrowRight,
   BarChart3, Activity, Volume2, Edit3, Trash2,
-  Bookmark, Library, LayoutDashboard, Menu, X, Sparkles
+  Bookmark, Library, LayoutDashboard, Menu, X, Sparkles, KeyRound
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -32,6 +32,7 @@ import {
 } from './lib/api';
 import Auth from './components/Auth';
 import AdminDashboard from './components/AdminDashboard';
+import ChangePasswordModal from './components/ChangePasswordModal';
 
 // --- Types ---
 interface Student {
@@ -407,6 +408,7 @@ export default function App() {
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isPwdModalOpen, setIsPwdModalOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiPrescription, setAiPrescription] = useState<string | null>(null);
@@ -1364,7 +1366,10 @@ export default function App() {
                     <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1 font-black">{user?.role === 'teacher' ? '教师' : '学生'}</p>
                     <p className="text-sm font-bold truncate">{user?.name}</p>
                   </div>
-                  <button onClick={handleLogout} className="p-2.5 text-slate-400 hover:text-rose-400 transition-colors"><LogOut className="w-5 h-5" /></button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => { setIsPwdModalOpen(true); setIsSidebarOpen(false); }} title="修改密码" aria-label="修改密码" className="p-2.5 text-slate-400 hover:text-indigo-300 transition-colors"><KeyRound className="w-5 h-5" /></button>
+                    <button onClick={handleLogout} title="退出登录" aria-label="退出登录" className="p-2.5 text-slate-400 hover:text-rose-400 transition-colors"><LogOut className="w-5 h-5" /></button>
+                  </div>
                 </div>
               </div>
             </motion.aside>
@@ -1411,7 +1416,10 @@ export default function App() {
               <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1 font-black">{user?.role === 'teacher' ? '教师' : '学生'}</p>
               <p className="text-sm font-bold truncate max-w-[120px]">{user?.name}</p>
             </div>
-            <button onClick={handleLogout} className="p-2.5 text-slate-400 hover:text-rose-400 transition-colors"><LogOut className="w-5 h-5" /></button>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => setIsPwdModalOpen(true)} title="修改密码" aria-label="修改密码" className="p-2.5 text-slate-400 hover:text-indigo-300 transition-colors"><KeyRound className="w-5 h-5" /></button>
+              <button onClick={handleLogout} title="退出登录" aria-label="退出登录" className="p-2.5 text-slate-400 hover:text-rose-400 transition-colors"><LogOut className="w-5 h-5" /></button>
+            </div>
           </div>
         </div>
       </aside>
@@ -1431,6 +1439,10 @@ export default function App() {
         <button onClick={() => setView('materials')} className={cn("flex flex-col items-center gap-1.5 px-4 py-2 rounded-2xl transition-all", view === 'materials' ? "text-indigo-600" : "text-slate-400")}>
           <Bookmark className="w-6 h-6" />
           <span className="text-[10px] font-black uppercase tracking-widest">素材</span>
+        </button>
+        <button onClick={() => setIsPwdModalOpen(true)} className="flex flex-col items-center gap-1.5 px-4 py-2 rounded-2xl text-slate-400">
+          <KeyRound className="w-6 h-6" />
+          <span className="text-[10px] font-black uppercase tracking-widest">密码</span>
         </button>
         <button onClick={handleLogout} className="flex flex-col items-center gap-1.5 px-4 py-2 rounded-2xl text-slate-400">
           <LogOut className="w-6 h-6" />
@@ -1814,6 +1826,8 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {isPwdModalOpen && <ChangePasswordModal onClose={() => setIsPwdModalOpen(false)} />}
     </div>
   );
 }
