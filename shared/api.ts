@@ -330,3 +330,46 @@ export async function aiUsageToday(env: any, uid: string): Promise<Record<string
   for (const r of (results || []) as any[]) out[r.kind] = Number(r.count) || 0;
   return out;
 }
+
+// ── 作文阅卷报告：可读文本的唯一来源 ───────────────────────────
+//
+// 数据库里同时存了两份：analysis（纯文本摘要）和 analysis_json（结构化 JSON）。
+// 历史接口原先返回 `analysis_json || analysis`，于是「历史诊断记录」在刷新之后
+// 显示的是一整段 {"essay_text":"…","score":52,…} 的原始 JSON，而不是报告本身。
+// 读写两处统一走这里拼装，避免再出现"结构变了、显示错位"。
+
+/** 把作文阅卷的结构化结果拼成 Markdown（前端用 ReactMarkdown 渲染）。 */
+export function buildEssayReport(result: any): string {
+  if (!result || typeof result !== "object") return "";
+  const d = result.dimensions || {};
+  return [
+    `## 作文原文\n\n${result.essay_text || "（未识别）"}`,
+    `## 阅卷评分\n\n总分: **${result.score ?? "?"} / 60**`,
+    `### 各维度得分`,
+    `- 立意深度: ${d["立意深度"] ?? "?"}/15`,
+    `- 结构安排: ${d["结构安排"] ?? "?"}/15`,
+    `- 语言表达: ${d["语言表达"] ?? "?"}/15`,
+    `- 卷面书写: ${d["卷面书写"] ?? "?"}/15`,
+    `## 优点`,
+    ...((result.strengths || []) as string[]).map((s) => `- ${s}`),
+    `## 不足与建议`,
+    ...((result.weaknesses || []) as string[]).map((s) => `- ❌ ${s}`),
+    ...((result.suggestions || []) as string[]).map((s) => `- 💡 ${s}`),
+    `## 总体评价\n\n${result.summary || ""}`,
+  ].join("\n");
+}
+
+/** 历史记录的可读正文：优先用 analysis_json 重拼 Markdown，否则退回纯文本列。 */
+export function essayReportFromRow(row: any): string {
+  const raw = row?.analysis_json;
+  if (raw) {
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const md = buildEssayReport(parsed);
+      if (md) return md;
+    } catch {
+      // 不是 JSON 就退回下面的纯文本列
+    }
+  }
+  return typeof row?.analysis === "string" ? row.analysis : "";
+}

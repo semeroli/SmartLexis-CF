@@ -1,6 +1,7 @@
 import {
   AuthError,
   assertStudentAccess,
+  buildEssayReport,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
@@ -251,21 +252,9 @@ export async function onRequestPost(context: any) {
     }
 
     // ✅ 返回前端期望的 WritingRecord 格式
-    const analysisMarkdown = [
-      `## 作文原文\n\n${result.essay_text || '（未识别）'}`,
-      `## 阅卷评分\n\n总分: **${result.score || '?'} / 60**`,
-      `### 各维度得分`,
-      `- 立意深度: ${result.dimensions?.['立意深度'] || '?'}/15`,
-      `- 结构安排: ${result.dimensions?.['结构安排'] || '?'}/15`,
-      `- 语言表达: ${result.dimensions?.['语言表达'] || '?'}/15`,
-      `- 卷面书写: ${result.dimensions?.['卷面书写'] || '?'}/15`,
-      `## 优点`,
-      ...(result.strengths || []).map((s: string) => `- ${s}`),
-      `## 不足与建议`,
-      ...(result.weaknesses || []).map((s: string) => `- ❌ ${s}`),
-      ...(result.suggestions || []).map((s: string) => `- 💡 ${s}`),
-      `## 总体评价\n\n${result.summary || ''}`,
-    ].join('\n');
+    // 报告文本由 shared/api 的 buildEssayReport 统一拼装 —— history 接口读历史时
+    // 用的是同一个函数，两处不会各写一份而对不上。
+    const analysisMarkdown = buildEssayReport(result);
 
     return jsonResponse({
       id,

@@ -3,6 +3,7 @@ import {
   assertStudentAccess,
   corsHeadersFor,
   errorResponse,
+  essayReportFromRow,
   jsonResponse,
   requireUser,
 } from "../../shared/api";
@@ -75,7 +76,9 @@ export async function onRequestGet(context: any) {
       teacherId: row.teacherId,
       title: row.title,
       essay_text: row.essay_text,
-      analysis: row.analysis_json || row.analysis || "",
+      // 注意：这里曾经写成 `analysis_json || analysis`，历史记录就会把原始 JSON
+      // 原样渲染出来。改用共享的 essayReportFromRow 重新拼成可读报告。
+      analysis: essayReportFromRow(row),
       date: row.date,
     }));
 

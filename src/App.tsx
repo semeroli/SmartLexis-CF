@@ -1539,6 +1539,19 @@ export default function App() {
                 </div>
               </Card>
             </motion.div>
+          ) : view === 'materials' ? (
+            <motion.div key="materials" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-10">
+              <header className="flex items-center gap-8">
+                {user?.role === 'teacher' && (
+                  <button onClick={() => setView('teacher')} className="w-14 h-14 shrink-0 flex items-center justify-center bg-white border border-slate-200 rounded-[24px] hover:bg-slate-50 transition-all shadow-sm hover:shadow-md"><ArrowRight className="w-6 h-6 rotate-180" /></button>
+                )}
+                <div>
+                  <h1 className="text-4xl font-black text-slate-900 tracking-tighter">{user?.role === 'teacher' ? '学生素材库' : '我的素材库'}</h1>
+                  <p className="text-slate-500 mt-3 font-bold">升格范文里点「收藏到素材库」的金句会汇总到这里 · 共 {materials.length} 条</p>
+                </div>
+              </header>
+              <MaterialLibrary materials={materials} onDelete={deleteMaterial} />
+            </motion.div>
           ) : (
             <motion.div key="student" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-10">
               <header className="flex items-center justify-between">
@@ -1564,8 +1577,11 @@ export default function App() {
               </header>
 
               <div id="student-report" className="space-y-10">
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-8">
-                  <Card className="md:col-span-3 lg:col-span-3 bg-emerald-50/30 border-emerald-100/50" delay={0.1}>
+                {/* 三栏：作文诊断占 2/3，学习处方占 1/3。
+                    原来是四栏（作文 3 + 处方 1），处方卡只有 248px 宽，
+                    卡内标题被压到每行两个字、「生成处方」按钮竖着撑成 94×104 的方块。 */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  <Card className="md:col-span-3 lg:col-span-2 bg-emerald-50/30 border-emerald-100/50" delay={0.1}>
                     <div className="flex items-center justify-between mb-10">
                       <div className="flex items-center gap-4">
                         <div className="w-12 h-12 bg-emerald-100 rounded-[20px] flex items-center justify-center"><PenTool className="w-6 h-6 text-emerald-600" /></div>
@@ -1624,13 +1640,13 @@ export default function App() {
                     </div>
                   </Card>
 
-                  <Card className="bg-indigo-50/30 border-indigo-100/50" delay={0.2}>
-                    <div className="flex items-center justify-between mb-8">
-                      <div className="flex items-center gap-4">
+                  <Card className="md:col-span-3 lg:col-span-1 bg-indigo-50/30 border-indigo-100/50" delay={0.2}>
+                    <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
+                      <div className="flex items-center gap-4 min-w-0">
                         <div className="w-12 h-12 bg-indigo-100 rounded-[20px] flex items-center justify-center"><BrainCircuit className="w-6 h-6 text-indigo-600" /></div>
-                        <div><h3 className="text-xl font-bold text-slate-900">智能学习处方</h3><p className="text-xs text-slate-500 font-bold">基于大模型的个性化提升建议</p></div>
+                        <div className="min-w-0"><h3 className="text-xl font-bold text-slate-900">智能学习处方</h3><p className="text-xs text-slate-500 font-bold">基于大模型的个性化提升建议</p></div>
                       </div>
-                      <button onClick={() => generateAIAnalysis(selectedStudent)} disabled={isGenerating} className="px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50">
+                      <button onClick={() => generateAIAnalysis(selectedStudent)} disabled={isGenerating} className="shrink-0 whitespace-nowrap px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50">
                         {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Target className="w-5 h-5" />}
                         {isGenerating ? "生成中..." : "生成处方"}
                       </button>
