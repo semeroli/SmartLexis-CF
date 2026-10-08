@@ -35,15 +35,18 @@ export async function onRequestPost(context: any) {
       return jsonResponse({ error: "MODELSCOPE_API_KEY is missing" }, 500, cors);
     }
 
+    // 满分口径与前端 src/lib/score.ts 保持一致：
+    // 选择25 + 现代文35 + 文言20 + 默写10 + 作文60 = 150。
+    // 注意「非连续性文本」不是独立板块，它的分数并入现代文阅读（Excel 里仍是独立一列）。
+    const modernTotal = (Number(student.modernReading) || 0) + (Number(student.nonLinear) || 0);
     const prompt = `你是一位资深的语文教育专家。请根据以下学生的考试数据进行深度学情分析，并给出具体的提升建议。
 学生姓名：${student.name}
-各项得分：
-- 选择题：${student.choice}/30
-- 现代文阅读：${student.modernReading}/30
+各项得分（括号内为该项满分）：
+- 选择题：${student.choice}/25
+- 现代文阅读：${modernTotal}/35（含非连续性文本）
 - 文言文阅读：${student.classicReading}/20
-- 非连续性文本：${student.nonLinear}/10
 - 默写填空：${student.dictation}/10
-- 作文：${student.composition}/50
+- 作文：${student.composition}/60
 总分：${student.total}/150
 
 请以 Markdown 格式输出，包含：

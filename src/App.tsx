@@ -22,6 +22,7 @@ import { jsPDF } from 'jspdf';
 // 原来的 html2canvas@1.4.1 不认识这些颜色格式，遇到就抛异常 —— 所以"导出 PDF"必然失败。
 import html2canvas from 'html2canvas-pro';
 import { cn, formatDay } from './lib/utils';
+import { SCORE_ITEMS, LITERACY_MAX, modernReadingTotal, TOTAL_MAX } from './lib/score';
 import {
   apiFetch,
   clearSession,
@@ -48,13 +49,16 @@ interface Student {
 }
 
 // 成绩录入弹窗的字段标签（原来直接显示 choice / modernReading 这类英文键名，老师看不懂）
+// 满分口径见 src/lib/score.ts，六项合计 150 分。
+// 「非连续性文本」不是独立板块、属于现代文阅读的一部分：现代文那一格可以直接填
+// 35 分制的总分，非连续性留空即可；两格都填也可以，统计时会自动相加。
 const SCORE_INPUT_FIELDS: { key: keyof Student; label: string }[] = [
-  { key: 'choice', label: '选择题' },
-  { key: 'modernReading', label: '现代文阅读' },
-  { key: 'classicReading', label: '文言文阅读' },
-  { key: 'nonLinear', label: '非连续性文本' },
-  { key: 'dictation', label: '默写填空' },
-  { key: 'composition', label: '作文' },
+  { key: 'choice', label: '选择题 / 25' },
+  { key: 'modernReading', label: '现代文阅读 / 35' },
+  { key: 'classicReading', label: '文言文阅读 / 20' },
+  { key: 'nonLinear', label: '非连续性（并入现代文）' },
+  { key: 'dictation', label: '默写填空 / 10' },
+  { key: 'composition', label: '作文 / 60' },
 ];
 
 interface WritingRecord {
@@ -308,17 +312,8 @@ const InteractivePractice = ({ data }: { data: PracticeData }) => {
 const ClassHeatmap = ({ students }: { students: Student[] }) => {
   if (!students.length) return null;
 
-  const types = [
-    { label: '选择题', key: 'choice', max: 30 },
-    { label: '现代文阅读', key: 'modernReading', max: 30 },
-    { label: '文言文阅读', key: 'classicReading', max: 20 },
-    { label: '非连续性', key: 'nonLinear', max: 10 },
-    { label: '默写填空', key: 'dictation', max: 10 },
-    { label: '作文', key: 'composition', max: 50 }
-  ];
-
-  const data = types.map(t => {
-    const avg = students.reduce((acc, s) => acc + ((s as any)[t.key] || 0), 0) / students.length;
+  const data = SCORE_ITEMS.map((t) => {
+    const avg = students.reduce((acc, s) => acc + t.get(s), 0) / students.length;
     const rate = Math.round((avg / t.max) * 100);
     return { name: t.label, rate };
   });
@@ -1091,10 +1086,13 @@ export default function App() {
   };
 
   const downloadTemplate = () => {
+    // 表头写上各项满分，老师填的时候心里有数。
+    // 导入是按表头名字找列的，所以列的顺序可以随便调，
+    // 也不存在"删掉某一列导致后面整行分数错位"的问题。
     const data = [
-      ["学号", "姓名", "选择题", "现代文阅读", "文言文阅读", "非连续性文本", "默写填空", "作文"],
-      ["2026001", "张三", 25, 20, 15, 8, 8, 42],
-      ["2026002", "李四", 22, 18, 12, 7, 9, 38]
+      ["学号", "姓名", "选择题(25)", "现代文阅读(35)", "文言文阅读(20)", "非连续性文本（并入现代文，可留空）", "默写填空(10)", "作文(60)"],
+      ["2026001", "张三", 20, 20, 15, 8, 8, 42],
+      ["2026002", "李四", 18, 18, 12, 7, 9, 38]
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(data);
@@ -1119,22 +1117,55 @@ export default function App() {
 
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
 
+        // 按「表头名字」找列，而不是认第几列。
+        // 原来按位置取值，老师一旦删掉或调换某一列，后面的分数会整列错位
+        // （比如默写的分数被记到作文上），而且不会报任何错。
+        const header = (jsonData[0] || []).map((v) => String(v ?? '').trim());
+        const findCol = (...names: string[]): number => {
+          for (const n of names) {
+            const exact = header.findIndex((h) => h === n);
+            if (exact >= 0) return exact;
+          }
+          for (const n of names) {
+            const loose = header.findIndex((h) => h.includes(n));
+            if (loose >= 0) return loose;
+          }
+          return -1;
+        };
+        const COL = {
+          id: findCol('学号'),
+          name: findCol('姓名'),
+          choice: findCol('选择题'),
+          modern: findCol('现代文阅读', '现代文'),
+          classic: findCol('文言文阅读', '文言文'),
+          nonLinear: findCol('非连续性文本', '非连续性'),
+          dictation: findCol('默写填空', '默写'),
+          composition: findCol('作文'),
+        };
+        // 万一表头认不出来（例如老师手写的 CSV 没有表头），退回按原来的列顺序解析
+        if (COL.id < 0 || COL.name < 0) {
+          COL.id = 0; COL.name = 1; COL.choice = 2; COL.modern = 3;
+          COL.classic = 4; COL.nonLinear = 5; COL.dictation = 6; COL.composition = 7;
+        }
+
         const rows = jsonData.slice(1);
         const newStudents = rows.map(row => {
           if (!row || row.length < 2) return null;
 
-          const [id, name, choice, modern, classic, nonLinear, dictation, composition] = row.map(v => v?.toString().trim());
+          const cell = (i: number): string => (i >= 0 ? String(row[i] ?? '').trim() : '');
+          const id = cell(COL.id);
+          const name = cell(COL.name);
           if (!id || !name) return null;
 
           const s = {
             id,
             name,
-            choice: parseInt(choice) || 0,
-            modernReading: parseInt(modern) || 0,
-            classicReading: parseInt(classic) || 0,
-            nonLinear: parseInt(nonLinear) || 0,
-            dictation: parseInt(dictation) || 0,
-            composition: parseInt(composition) || 0,
+            choice: parseInt(cell(COL.choice)) || 0,
+            modernReading: parseInt(cell(COL.modern)) || 0,
+            classicReading: parseInt(cell(COL.classic)) || 0,
+            nonLinear: parseInt(cell(COL.nonLinear)) || 0,
+            dictation: parseInt(cell(COL.dictation)) || 0,
+            composition: parseInt(cell(COL.composition)) || 0,
             total: 0
           };
           s.total = s.choice + s.modernReading + s.classicReading + s.nonLinear + s.dictation + s.composition;
@@ -1204,7 +1235,7 @@ export default function App() {
 
   const getScoreDistribution = () => {
     const ranges = [
-      { range: '130+', min: 130, max: 151 },
+      { range: '130+', min: 130, max: TOTAL_MAX + 1 },
       { range: '120-130', min: 120, max: 130 },
       { range: '110-120', min: 110, max: 120 },
       { range: '100-110', min: 100, max: 110 },
@@ -1219,16 +1250,8 @@ export default function App() {
 
   const getTypePerformance = () => {
     if (!students.length) return [];
-    const types = [
-      { label: '选择题', key: 'choice', max: 30 },
-      { label: '现代文阅读', key: 'modernReading', max: 30 },
-      { label: '文言文阅读', key: 'classicReading', max: 20 },
-      { label: '非连续性文本', key: 'nonLinear', max: 10 },
-      { label: '默写填空', key: 'dictation', max: 10 },
-      { label: '作文', key: 'composition', max: 50 }
-    ];
-    return types.map(t => {
-      const avg = students.reduce((acc, s) => acc + (s as any)[t.key], 0) / students.length;
+    return SCORE_ITEMS.map(t => {
+      const avg = students.reduce((acc, s) => acc + t.get(s), 0) / students.length;
       const rate = Math.round((avg / t.max) * 100);
       let color = 'bg-indigo-500';
       if (rate >= 85) color = 'bg-emerald-500';
@@ -1240,11 +1263,11 @@ export default function App() {
   };
 
   const getLiteracyData = (s: Student) => [
-    { subject: '语言建构', value: Math.round(((s.choice + s.dictation) / 40) * 100) || 0 },
-    { subject: '思维发展', value: Math.round(((s.modernReading + s.nonLinear) / 40) * 100) || 0 },
-    { subject: '审美鉴赏', value: Math.round((s.composition / 50) * 100) || 0 },
-    { subject: '文化传承', value: Math.round((s.classicReading / 20) * 100) || 0 },
-    { subject: '表达创作', value: Math.round(((s.composition + s.modernReading) / 80) * 100) || 0 },
+    { subject: '语言建构', value: Math.round(((s.choice + s.dictation) / LITERACY_MAX.language) * 100) || 0 },
+    { subject: '思维发展', value: Math.round((modernReadingTotal(s) / LITERACY_MAX.thinking) * 100) || 0 },
+    { subject: '审美鉴赏', value: Math.round((s.composition / LITERACY_MAX.aesthetics) * 100) || 0 },
+    { subject: '文化传承', value: Math.round((s.classicReading / LITERACY_MAX.culture) * 100) || 0 },
+    { subject: '表达创作', value: Math.round(((s.composition + modernReadingTotal(s)) / LITERACY_MAX.expression) * 100) || 0 },
   ];
 
   const filteredStudents = students.filter(s => s.name.includes(searchTerm) || s.id.includes(searchTerm));
@@ -1766,6 +1789,7 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              <p className="text-xs font-bold text-slate-400 mt-4">每格后面的数字是该项满分，六项合计 150 分。「非连续性文本」已并入现代文阅读：现代文那一格直接填总分即可，非连续性留空。</p>
               <div className="flex justify-end gap-4 mt-10">
                 <button onClick={() => setIsEditModalOpen(false)} className="px-8 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black hover:bg-slate-200 transition-all">取消</button>
                 <button onClick={() => handleSaveStudent(editingStudent)} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black hover:bg-indigo-700 transition-all">保存</button>
