@@ -2,6 +2,7 @@ import {
   AuthError,
   assertStudentAccess,
   buildEssayReport,
+  callModelscope,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
@@ -92,15 +93,6 @@ export async function onRequestPost(context: any) {
       teacherId = user.uid;
     }
 
-    // 配置检查放在身份与范围判定之后：没权限的请求直接 403，
-    // 不会因为"密钥没配置"而暴露服务器状态。
-    if (!env.AGNES_API_KEY) {
-      console.error("AGNES_API_KEY not configured");
-      return jsonResponse({
-        error: "AGNES_API_KEY 未配置，请在 Cloudflare Pages 环境变量中设置",
-      }, 500, cors);
-    }
-
     // 真正开始烧额度之前，先过每日配额闸门
     await checkAiQuota(env, user, "essay");
 
@@ -129,24 +121,19 @@ export async function onRequestPost(context: any) {
       });
     }
 
-    console.log(`Calling agnes-ai with ${safeImages.length} images, title: ${title}`);
+    console.log(`作文阅卷：${safeImages.length} 张图，题目《${title}》`);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
-
-    // 调用 agnes-ai API（OpenAI 兼容格式）
-    const res = await fetch("https://apihub.agnes-ai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.AGNES_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "agnes-2.0-flash",
-        messages: [
-          {
-            role: "system",
-            content: `你是资深语文阅卷组组长。
+    // 阅卷要「读图」，所以走 vision 这条候选链（魔搭的视觉模型）。
+    // 原先用的是第三方中转站 apihub.agnes-ai.com —— 2026-10-08 起它对我们的
+    // 请求持续回 429（Cloudflare error code 1015 = 被限流），阅卷因此整个失效。
+    // 索性统一到魔搭：和另外三个 AI 功能同一家，少一个要单独维护的账号。
+    const { content, model: usedModel, attempts } = await callModelscope(
+      env,
+      "vision",
+      [
+        {
+          role: "system",
+          content: `你是资深语文阅卷组组长。
 请严格按照以下 JSON 格式输出，不要输出其他文字：
 
 {
@@ -163,40 +150,35 @@ export async function onRequestPost(context: any) {
   "suggestions": ["建议1", "建议2"],
   "summary": "总体评价（100字以内）"
 }`,
-          },
-          {
-            role: "user",
-            content: contentParts,
-          },
-        ],
-        temperature: 0.2,
-        max_tokens: 3500,
-      }),
-      signal: controller.signal,
-    });
+        },
+        {
+          role: "user",
+          content: contentParts,
+        },
+      ],
+      // 时间安排：单个模型最多等 50 秒（视觉大模型首次唤醒要冷启动，短了等不到），
+      // 整条链最多 75 秒。之所以不是"每个都等 50 秒"—— 候选链有好几个，逐个等满
+      // 会让老师对着转圈十几分钟。留 25 秒余量是因为 Cloudflare 边缘对源站的等待
+      // 上限是 100 秒（超了会回 524），必须在边缘放弃之前自己先收手。
+      { temperature: 0.2, maxTokens: 3500, timeoutMs: 50000, totalBudgetMs: 75000 }
+    );
 
-    clearTimeout(timeout);
+    // 记下是哪个模型出的卷、路上还试过谁 ——
+    // 以后平台再下架 / 改名模型，看日志就知道发生了什么。
+    console.log(
+      `作文阅卷使用模型: ${usedModel}` +
+        (attempts.length ? `（此前失败：${attempts.map((a) => `${a.model}:${a.result}`).join("、")}）` : "")
+    );
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error(`agnes-ai API error: ${res.status} ${errText}`);
-      return jsonResponse({
-        error: `agnes-ai API 错误 (${res.status})`,
-        detail: errText,
-      }, 502, cors);
-    }
-
-    const data = await res.json();
-    console.log("agnes-ai response received");
-
-    let raw = data.choices?.[0]?.message?.content || "";
-
-    if (!raw) {
-      console.error("agnes-ai returned empty content:", JSON.stringify(data));
-      return jsonResponse({ error: "agnes-ai 返回空内容", detail: data }, 502, cors);
-    }
-
-    raw = raw.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+    // 把 JSON 从模型回答里「抠」出来。
+    // 不能只剥开头的 ```json —— 预览版模型常写成「好的，以下是分析：\n```json\n{...}\n```」，
+    // 那样 JSON.parse 必失败。所以三步走：先截代码块，再从第一个 { 取到最后一个 }。
+    let raw = String(content).trim();
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fence && fence[1].trim()) raw = fence[1].trim();
+    const braceOpen = raw.indexOf("{");
+    const braceClose = raw.lastIndexOf("}");
+    if (braceOpen >= 0 && braceClose > braceOpen) raw = raw.slice(braceOpen, braceClose + 1);
 
     let result: any;
     try {

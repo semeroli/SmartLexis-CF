@@ -421,3 +421,238 @@ export function essayReportFromRow(row: any): string {
   }
   return typeof row?.analysis === "string" ? row.analysis : "";
 }
+
+// ── 魔搭（ModelScope）AI 调用 —— 带「模型降级链」────────────────
+//
+// 背景（2026-10-08 的一次真实故障）：AI 平台会下架 / 改名模型。那天
+// `ZhipuAI/GLM-5.1` 被下架（调用回 "has no provider supported"），
+// `Qwen/Qwen3-VL-8B-Instruct` 也从可用清单里消失 —— 于是学情分析、专项练习、
+// 作文升格三个功能同时失效。根因不是代码写错，而是「模型名被写死在代码里」
+// 这件事本身太脆：平台一改名，功能当场断，而且断得没有提示。
+//
+// 现在改成候选链：按顺序尝试，谁先成功就用谁，并把它记下来（isolate 级），
+// 后续请求直接命中上次成功的那个。平台再改名，系统自己绕过去。
+//
+// 不用改代码就能换模型（Cloudflare Pages 控制台 → 环境变量）：
+//   MODELSCOPE_MODEL         覆盖所有类别
+//   MODELSCOPE_VISION_MODEL  只覆盖「要读图」的（作文阅卷）
+//   MODELSCOPE_TEXT_MODEL    只覆盖「纯文本」的
+// 值可以是逗号分隔的多个模型名，按顺序尝试，排在内置候选之前。
+
+export type AiModelKind = "vision" | "text";
+
+const MODELSCOPE_ENDPOINT = "https://api-inference.modelscope.cn/v1/chat/completions";
+
+/**
+ * 上游地址可配置 —— 方便整站换平台，而不用再改接口代码。
+ *   通用覆盖：MODELSCOPE_ENDPOINT
+ *   分类型覆盖：MODELSCOPE_VISION_ENDPOINT / MODELSCOPE_TEXT_ENDPOINT
+ *
+ * 之所以能"只换地址就切平台"：魔搭、智谱、SiliconFlow 的对话接口都是
+ * OpenAI 兼容格式 —— 请求体 `{model, messages, temperature, max_tokens}`，
+ * 响应体 `choices[0].message.content`，图片都用 `image_url`。
+ * 所以切平台 = 换 endpoint + 换 key + 换模型名，三个环境变量搞定。
+ *
+ * 例：作文阅卷改用智谱免费视觉模型
+ *   MODELSCOPE_VISION_ENDPOINT = https://open.bigmodel.cn/api/paas/v4/chat/completions
+ *   MODELSCOPE_API_KEY         = <智谱 API Key>
+ *   MODELSCOPE_VISION_MODEL    = glm-4v-flash
+ */
+export function aiEndpoint(env: any, kind: AiModelKind): string {
+  const specific =
+    kind === "vision" ? env?.MODELSCOPE_VISION_ENDPOINT : env?.MODELSCOPE_TEXT_ENDPOINT;
+  return String(specific || env?.MODELSCOPE_ENDPOINT || "").trim() || MODELSCOPE_ENDPOINT;
+}
+
+/** 内置候选链：前面失败就自动试后面的。 */
+export const DEFAULT_MODEL_CHAIN: Record<AiModelKind, string[]> = {
+  /**
+   * 视觉链 —— 2026-10-08 用「canvas 画诗句、看模型能否原文读出」的方式，
+   * 对 10 个候选逐一实测（只回 HTTP 200 不算数，必须真读到图）。结果：
+   *
+   *   ✅ Shanghai_AI_Laboratory/Intern-S2-Preview   200 / 1.2s / 原文读出 ✅
+   *   ⏳ deepseek-ai/DeepSeek-V4-Flash-Vision-Exp   503「SGLang 正在加载模型」（冷启动）
+   *   ❌ Shanghai_AI_Laboratory/Intern-S1(-mini)    401 本账号无权限
+   *   ❌ Qwen/Qwen3-VL-8B / 235B、Qwen/QVQ-72B       400 平台不提供
+   *   ❌ PaddlePaddle/ERNIE-4.5-VL-28B、InternVL3_5  401 本账号无权限
+   *   ❌ ZhipuAI/GLM-4.6V(-Flash)                    400 平台不提供
+   *
+   * 所以只留两个：一个已验证能用且快（1.2 秒，不是冷启动），一个是唯一
+   * 另一个「有提供商」的（它在冷启动，留着当备胎）。其余全删 —— 留着只会
+   * 让每次阅卷多花几秒去撞墙（虽然 deadModels 会兜住，但没必要）。
+   */
+  vision: [
+    "Shanghai_AI_Laboratory/Intern-S2-Preview",
+    "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+  ],
+  // 2026-10-08 实测（用户账号）：前两个 200 且有正文；GLM-5.2 只回了推理内容、
+  // 正文为空；GLM-4.7-Flash 回 429「模型当前访问量过大」。所以按可用性排序。
+  text: [
+    "Qwen/Qwen3.8-Flash-Next",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
+    "ZhipuAI/GLM-5.2",
+    "ZhipuAI/GLM-4.7-Flash",
+  ],
+};
+
+/** 每个类别上一次成功的模型（isolate 级；新 isolate 会回到候选链头部） */
+const lastGoodModel: Partial<Record<AiModelKind, string>> = {};
+
+/**
+ * 「已经确认没戏」的模型（isolate 级）。
+ *
+ * 实测发现候选项里有大量「平台根本不提供这个模型」（回 400 has no provider
+ * supported）和「本账号无权限」（回 401）。这类结论短期内不会变，但每次阅卷
+ * 都要重新把这些死模型试一遍，白白吃掉几十秒。所以记下来，同一个 isolate 内
+ * 直接跳过。
+ *
+ * ⚠️ 只记「确定不会变」的：400 不提供 / 401 无权限 / 403 被拒。
+ * 429 限流、503 加载中、超时都是**临时**状态，绝不能记 —— 否则会把一个本来
+ * 可用的模型永久拉黑。
+ */
+const deadModels = new Set<string>();
+
+/** MODELSCOPE_API_KEY 支持逗号分隔多个 key，轮换使用以摊平单 key 的速率限制 */
+export function modelscopeKeys(env: any): string[] {
+  return String(env?.MODELSCOPE_API_KEY || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+export function modelscopeModelChain(env: any, kind: AiModelKind): string[] {
+  const specific = kind === "vision" ? env?.MODELSCOPE_VISION_MODEL : env?.MODELSCOPE_TEXT_MODEL;
+  const merged = [
+    ...String(specific || "").split(","),
+    ...String(env?.MODELSCOPE_MODEL || "").split(","),
+    lastGoodModel[kind] || "",
+    ...DEFAULT_MODEL_CHAIN[kind],
+  ]
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(merged)];
+}
+
+export interface AiAttempt {
+  model: string;
+  result: string;
+  note?: string;
+}
+
+export interface AiCallResult {
+  content: string;
+  model: string;
+  attempts: AiAttempt[];
+}
+
+/**
+ * 调魔搭：按候选链依次尝试，返回第一个成功的内容。
+ *
+ * 全部失败时抛 HttpError(502)，文案里带上「每个模型分别报了什么」——
+ * 这样下次平台再改模型，老师在界面上直接就能看到是谁下架了，不用再来回猜。
+ */
+export async function callModelscope(
+  env: any,
+  kind: AiModelKind,
+  messages: any[],
+  opts: {
+    maxTokens?: number;
+    temperature?: number;
+    timeoutMs?: number;
+    totalBudgetMs?: number;
+  } = {}
+): Promise<AiCallResult> {
+  const keys = modelscopeKeys(env);
+  if (!keys.length) throw new HttpError(500, "MODELSCOPE_API_KEY 未配置");
+
+  const chain = modelscopeModelChain(env, kind);
+  const timeoutMs = opts.timeoutMs ?? 60000;
+  // 整条链的总时间预算。
+  // 注：CF 官方文档明确 HTTP 触发的 Worker **没有墙钟时长上限**（只要客户端还连着），
+  // 所以这不是被平台逼出来的妥协 —— 是替老师考虑：阅卷点下去，等 40 秒还能接受，
+  // 等十几分钟没有任何反馈就不能接受了。到点就收，带着「试过谁、各自报了什么」
+  // 的清单快速失败，比漫长地沉默有用得多。
+  const budgetMs = opts.totalBudgetMs ?? 40000;
+  const startedAt = Date.now();
+  const attempts: AiAttempt[] = [];
+
+  for (const model of chain) {
+    // 已知「平台不提供 / 本账号无权限」的模型直接跳过，不浪费老师的时间
+    if (deadModels.has(model)) continue;
+    const left = budgetMs - (Date.now() - startedAt);
+    if (left <= 2500) {
+      attempts.push({ model, result: "总时间已用完，未及尝试" });
+      break;
+    }
+    const perTry = Math.min(timeoutMs, left);
+    const key = keys[Math.floor(Math.random() * keys.length)];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), perTry);
+    try {
+      const res = await fetch(aiEndpoint(env, kind), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: opts.temperature ?? 0.2,
+          max_tokens: opts.maxTokens ?? 2500,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        const note = (await res.text().catch(() => "")).slice(0, 240).replace(/\s+/g, " ");
+        attempts.push({ model, result: `HTTP ${res.status}`, note });
+        // 「平台不提供这个模型」(400) / 「本账号无权限」(401、403) 都是短期内
+        // 不会变的结论 —— 记进黑名单，同一个 isolate 内不再重试。
+        // 429 限流、503 加载中属于临时状态，不记（否则会误伤可用模型）。
+        if (
+          res.status === 401 ||
+          res.status === 403 ||
+          (res.status === 400 && /no provider supported/i.test(note))
+        ) {
+          deadModels.add(model);
+        }
+        // key 本身无效（401/403）时换模型也没用，直接停
+        if (res.status === 401 || res.status === 403) break;
+        continue;
+      }
+
+      const data: any = await res.json().catch(() => null);
+      const msg = data?.choices?.[0]?.message || {};
+      const content = String(msg.content ?? "").trim();
+      const reasoning = String(msg.reasoning_content ?? "").trim();
+
+      if (!content) {
+        // 推理型模型把内容放进 reasoning_content、content 为空时，绝不能把
+        // 「推理过程」当成答案端给老师 —— 记为失败，继续试下一个模型。
+        attempts.push({
+          model,
+          result: reasoning ? "只返回了推理过程、正文为空" : "返回内容为空",
+          note: reasoning.slice(0, 120),
+        });
+        continue;
+      }
+
+      lastGoodModel[kind] = model;
+      return { content, model, attempts };
+    } catch (e: any) {
+      clearTimeout(timer);
+      attempts.push({
+        model,
+        result: e?.name === "AbortError" ? `超时(${perTry}ms)` : "请求异常",
+        note: String(e?.message || e).slice(0, 160),
+      });
+    }
+  }
+
+  const tried = attempts.filter((a) => a.result !== "总时间已用完，未及尝试");
+  const detail = tried.length
+    ? tried.map((a) => `${a.model} → ${a.result}`).join("；")
+    : `候选模型都已确认不可用（共 ${chain.length} 个，多为平台下架或本账号无权限）` +
+      (attempts.length ? "，且剩余模型来不及尝试" : "");
+  throw new HttpError(502, `AI 服务暂不可用（${detail}）`);
+}

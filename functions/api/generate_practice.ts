@@ -1,4 +1,5 @@
 import {
+  callModelscope,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
@@ -96,11 +97,6 @@ export async function onRequestPost(context: any) {
 
     const focusArea = weakPoints.length > 0 ? weakPoints.join("、") : "语文综合素养提升";
 
-    const apiKey = env.MODELSCOPE_API_KEY;
-    if (!apiKey) {
-      return jsonResponse({ error: "MODELSCOPE_API_KEY is missing" }, 500, cors);
-    }
-
     const prompt = `你是一位资深的语文特级教师。根据该学生的考试表现（重点提升：${focusArea}），请生成一份“专项练习”试题集。
     
 请严格按照以下 JSON 格式返回练习内容，不要包含任何其他文字：
@@ -130,35 +126,16 @@ export async function onRequestPost(context: any) {
 2. 难度适中，符合高考/中考水平。
 3. 必须返回合法的 JSON 格式。`;
 
-    const res = await fetch("https://api-inference.modelscope.cn/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "ZhipuAI/GLM-5.1", // ✅ 更换为魔塔 GLM-5.1
-        messages: [
-          { role: "system", content: "你是语文出题专家。" },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.7,
-        max_tokens: 3000,
-      }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.error("ModelScope error:", data);
-      return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
-    }
-
-    const raw = data?.choices?.[0]?.message?.content || "";
-    if (!raw.trim()) {
-      console.error("专项练习返回空内容");
-      return jsonResponse({ error: "AI 没有返回练习内容，请重新生成一次" }, 502, cors);
-    }
+    const { content: raw, model } = await callModelscope(
+      env,
+      "text",
+      [
+        { role: "system", content: "你是语文出题专家。" },
+        { role: "user", content: prompt },
+      ],
+      { temperature: 0.7, maxTokens: 3000 }
+    );
+    console.log(`专项练习使用模型: ${model}`);
 
     const parsed = parseLooseJson(raw);
     if (!parsed) {

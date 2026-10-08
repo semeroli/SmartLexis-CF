@@ -1,4 +1,12 @@
-import { checkAiQuota, corsHeadersFor, errorResponse, jsonResponse, recordAiUsage, requireUser } from "../../shared/api";
+import {
+  callModelscope,
+  checkAiQuota,
+  corsHeadersFor,
+  errorResponse,
+  jsonResponse,
+  recordAiUsage,
+  requireUser,
+} from "../../shared/api";
 
 // 作文升格。会消耗 AI 额度，必须登录 + 过每日配额。
 
@@ -21,12 +29,6 @@ export async function onRequestPost(context: any) {
     if (!content) {
       return jsonResponse({ error: "缺少作文原文，请先完成深度诊断再升格" }, 400, cors);
     }
-
-    const keys = (env.MODELSCOPE_API_KEY || "").split(",").map((k: string) => k.trim()).filter(Boolean);
-    if (keys.length === 0) {
-      return jsonResponse({ error: "MODELSCOPE_API_KEY 未配置" }, 500, cors);
-    }
-    const apiKey = keys[Math.floor(Math.random() * keys.length)];
 
     const prompt = `
 你是一位资深的语文特级教师。请对以下作文进行"升格"处理。
@@ -52,46 +54,16 @@ ${content}
 （此处为解析内容）
 `;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000);
-
-    const res = await fetch("https://api-inference.modelscope.cn/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "Qwen/Qwen3-VL-8B-Instruct",
-        messages: [
-          {
-            role: "system",
-            content: "你是资深语文特级教师，擅长作文升格与教学点评。",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        temperature: 0.7,
-        max_tokens: 3500,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
-    }
-
-    const text = data?.choices?.[0]?.message?.content;
-    if (!text || !String(text).trim()) {
-      console.error("作文升格返回空内容:", JSON.stringify(data).slice(0, 200));
-      return jsonResponse({ error: "AI 没有返回升格内容，请稍后重试" }, 502, cors);
-    }
+    const { content: text, model } = await callModelscope(
+      env,
+      "text",
+      [
+        { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
+        { role: "user", content: prompt },
+      ],
+      { temperature: 0.7, maxTokens: 3500 }
+    );
+    console.log(`作文升格使用模型: ${model}`);
 
     // 确认内容可用后才记一次用量
     await recordAiUsage(env, user, "upgrade");

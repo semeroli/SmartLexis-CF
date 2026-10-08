@@ -1,4 +1,12 @@
-import { checkAiQuota, corsHeadersFor, errorResponse, jsonResponse, recordAiUsage, requireUser } from "../../shared/api";
+import {
+  callModelscope,
+  checkAiQuota,
+  corsHeadersFor,
+  errorResponse,
+  jsonResponse,
+  recordAiUsage,
+  requireUser,
+} from "../../shared/api";
 
 interface StudentInput {
   name: string;
@@ -30,11 +38,6 @@ export async function onRequestPost(context: any) {
     const student: StudentInput = body.student;
     if (!student) return jsonResponse({ error: "缺少学生数据" }, 400, cors);
 
-    const apiKey = env.MODELSCOPE_API_KEY;
-    if (!apiKey) {
-      return jsonResponse({ error: "MODELSCOPE_API_KEY is missing" }, 500, cors);
-    }
-
     // 满分口径与前端 src/lib/score.ts 保持一致：
     // 选择25 + 现代文35 + 文言20 + 默写10 + 作文60 = 150。
     // 注意「非连续性文本」不是独立板块，它的分数并入现代文阅读（Excel 里仍是独立一列）。
@@ -55,36 +58,18 @@ export async function onRequestPost(context: any) {
 3. 薄弱环节
 4. 针对性提升方案（分阶段、可操作）`;
 
-    const res = await fetch("https://api-inference.modelscope.cn/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "ZhipuAI/GLM-5.1",
-        messages: [
-          { role: "system", content: "你是资深语文教育专家。" },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0.7,
-        max_tokens: 2500,
-      }),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      console.error("ModelScope error:", data);
-      return jsonResponse({ error: "ModelScope API error", detail: data }, 500, cors);
-    }
-
-    const analysis = data?.choices?.[0]?.message?.content;
-    if (!analysis) {
-      // 别把"分析失败"当成分析结果塞进报告里——用户会以为那就是 AI 的结论
-      console.error("ModelScope 返回空内容:", JSON.stringify(data).slice(0, 200));
-      return jsonResponse({ error: "AI 没有返回分析内容，请稍后重试" }, 502, cors);
-    }
+    // 模型名不再写死：交给 shared/api 的「模型降级链」——
+    // 平台下架 / 改名模型时自动换到下一个可用的，不用改代码。
+    const { content: analysis, model } = await callModelscope(
+      env,
+      "text",
+      [
+        { role: "system", content: "你是资深语文教育专家。" },
+        { role: "user", content: prompt },
+      ],
+      { temperature: 0.7, maxTokens: 2500 }
+    );
+    console.log(`学情分析使用模型: ${model}`);
 
     // 只有真的拿到内容才记一次用量
     await recordAiUsage(env, user, "analyze");
