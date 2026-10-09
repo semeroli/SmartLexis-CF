@@ -174,11 +174,12 @@ export async function onRequestPost(context: any) {
           content: contentParts,
         },
       ],
-      // 时间安排：单个模型最多等 50 秒（视觉大模型首次唤醒要冷启动，短了等不到），
-      // 整条链最多 75 秒。之所以不是"每个都等 50 秒"—— 候选链有好几个，逐个等满
-      // 会让老师对着转圈十几分钟。留 25 秒余量是因为 Cloudflare 边缘对源站的等待
-      // 上限是 100 秒（超了会回 524），必须在边缘放弃之前自己先收手。
-      { temperature: 0.2, maxTokens: 3500, timeoutMs: 50000, totalBudgetMs: 75000 }
+      // 时间安排（2026-10-09 实测校准）：单个模型最多等 32 秒，整条链最多 35 秒。
+      // 上限被平台的请求时长卡住 —— 实测 33.5 秒能正常返回，40.5 秒会被 Cloudflare
+      // 直接吐一张 502 HTML 页面（而不是我们的 JSON）。35 秒留出约 5 秒余量，
+      // 保证失败时返回的是能读懂的原因，而不是一张空白错误页。
+      // 阅卷是唯一需要读图的功能，本身耗时最长，所以单独放宽到这个上限。
+      { temperature: 0.2, maxTokens: 3500, timeoutMs: 32000, totalBudgetMs: 35000 }
     );
 
     // 记下是哪个模型出的卷、路上还试过谁 ——
@@ -217,6 +218,23 @@ export async function onRequestPost(context: any) {
       console.error("作文阅卷结果为空:", JSON.stringify(result).slice(0, 200));
       return jsonResponse({
         error: "没能识别出作文内容或评分，请换一张更清晰的照片重试",
+      }, 502, cors);
+    }
+
+    // ⚠️ 不能让「模型说它没看懂」混成一份 0 分报告。
+    // 实测：传一张没有内容的图时，模型会老老实实回
+    //   essay_text="图片为纯红色，无文字作文内容，无法识别" + score=0
+    // 这是"格式合法、内容是失败声明"—— 直接落库、直接展示的话，
+    // 老师会以为这篇作文被判了 0 分，比明确报错更糟。
+    const essayTextRaw = String(result?.essay_text || "");
+    const failureWords =
+      /无法识别|不能识别|无法看清|看不清|内容缺失|无文字|没有文字|无法进行内容分析|无法评分|图片(为|是)纯/;
+    if (Number(result?.score) === 0 && failureWords.test(essayTextRaw)) {
+      console.error("作文阅卷：模型表示没能识别出内容 —", essayTextRaw.slice(0, 120));
+      return jsonResponse({
+        error:
+          "这张图里没能识别出作文内容。请换一张更清晰、光线更好的照片重试" +
+          "（尽量只拍作文那一页，拍正、把字迹拍清楚）",
       }, 502, cors);
     }
 

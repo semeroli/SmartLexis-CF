@@ -13,7 +13,7 @@ import { corsHeadersFor, jsonResponse } from "../../shared/api";
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-09-image-compress";
+const BUILD = "2026-10-09-timeout-calibration";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });

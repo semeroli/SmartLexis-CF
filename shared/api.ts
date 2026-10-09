@@ -568,11 +568,15 @@ export async function callModelscope(
   const chain = modelscopeModelChain(env, kind);
   const timeoutMs = opts.timeoutMs ?? 60000;
   // 整条链的总时间预算。
-  // 注：CF 官方文档明确 HTTP 触发的 Worker **没有墙钟时长上限**（只要客户端还连着），
-  // 所以这不是被平台逼出来的妥协 —— 是替老师考虑：阅卷点下去，等 40 秒还能接受，
-  // 等十几分钟没有任何反馈就不能接受了。到点就收，带着「试过谁、各自报了什么」
-  // 的清单快速失败，比漫长地沉默有用得多。
-  const budgetMs = opts.totalBudgetMs ?? 40000;
+  //
+  // ⚠️ 2026-10-09 实测校准：这个值**必须明显小于平台允许的请求时长**。
+  // 实测数据：一次 33.5 秒的请求正常返回；一次 40.5 秒的请求被 Cloudflare
+  // 自己吐了一张 502 HTML 页面（`<title>xxx | 502: Bad gateway</title>`，
+  // 不是我们代码返回的 JSON）。
+  // 也就是说：预算顶到 40 秒时，我们"到点收手 → 返回一句人话"的意图会落空 ——
+  // 平台的线先到，用户拿到的是一张什么都看不出来的错误页，比明确报错更糟。
+  // 所以取 28 秒：留足余量，保证失败时是我们自己的 JSON 先返回。
+  const budgetMs = opts.totalBudgetMs ?? 28000;
   const startedAt = Date.now();
   const attempts: AiAttempt[] = [];
 
@@ -654,5 +658,16 @@ export async function callModelscope(
     ? tried.map((a) => `${a.model} → ${a.result}`).join("；")
     : `候选模型都已确认不可用（共 ${chain.length} 个，多为平台下架或本账号无权限）` +
       (attempts.length ? "，且剩余模型来不及尝试" : "");
+
+  // 把「试过谁、各自报了什么」写进服务端日志（Cloudflare 的 Functions 日志里能看到）。
+  // 线上再出问题时，直接看日志就能定位，不用再让老师跑诊断脚本。
+  const usedSecs = ((Date.now() - startedAt) / 1000).toFixed(1);
+  console.error(
+    `[AI失败] kind=${kind} 耗时=${usedSecs}s 预算=${budgetMs}ms | ` +
+      attempts
+        .map((a) => `${a.model}→${a.result}${a.note ? "「" + a.note.slice(0, 90) + "」" : ""}`)
+        .join(" || ")
+  );
+
   throw new HttpError(502, `AI 服务暂不可用（${detail}）`);
 }
