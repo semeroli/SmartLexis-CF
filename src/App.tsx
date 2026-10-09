@@ -720,20 +720,60 @@ export default function App() {
     }
   };
 
-  // ✅ 修复：图片上传上限与后端对齐（2张）
-  const handleEssayImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    Array.from(e.target.files || []).forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const result = event.target?.result as string;
-        if (!result.startsWith("data:image/")) {
-          setEssayImages(prev => [...prev, `data:image/jpeg;base64,${result}`]);
-        } else {
-          setEssayImages(prev => [...prev, result]);
-        }
+  /**
+   * 把选中的图片压缩后再上传。
+   *
+   * 原先的写法是把手机原图（常见 3～8MB）直接转成 base64 传上去，服务端要解析
+   * 这么大的表单、再拼一个几 MB 的请求体转发给 AI。而 Cloudflare 免费版给单个
+   * 请求的 CPU 时间只有 10 毫秒 —— 处理这么大的字符串很容易超限，请求会被平台
+   * 直接掐断，前端只能看到一个没有原因的失败（"阅卷失败 (服务器错误)"）。
+   *
+   * 压到长边 1600px / JPEG 0.82 后通常只剩 200～500KB，读手写作文完全够用。
+   */
+  const compressImage = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('无法处理这张图片')); return; }
+        // 先铺白底：作文多是白纸，而 JPEG 不支持透明（透明区域会变黑）
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.82));
       };
-      reader.readAsDataURL(file);
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
+      img.src = url;
     });
+
+  // 图片上传：最多 2 张（与后端一致），且**先压缩再进 state**
+  const handleEssayImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter(f => f.type.startsWith('image/'));
+    e.target.value = ''; // 清空，方便连续选同一张图
+    for (const file of files) {
+      let dataUrl = '';
+      try {
+        dataUrl = await compressImage(file);
+      } catch {
+        // 压缩失败就退回原图 —— 至少别让老师传不上去
+        dataUrl = await new Promise<string>((res) => {
+          const r = new FileReader();
+          r.onload = (ev) => res(String(ev.target?.result || ''));
+          r.readAsDataURL(file);
+        });
+      }
+      if (!dataUrl) continue;
+      // 在 setState 里再判一次上限：state 是异步的，外面读到的 length 可能是旧值
+      setEssayImages(prev => (prev.length >= 2 ? prev : [...prev, dataUrl]));
+    }
   };
 
   const selectedStudent = students.find(s => s.id === selectedStudentId) || students[0] || {
@@ -774,8 +814,19 @@ export default function App() {
       const res = await apiFetch('/api/analyze_essay', { method: 'POST', body: formData });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: "阅卷失败 (服务器错误)" }));
-        throw new Error(errorData.error || `HTTP ${res.status}`);
+        // 服务端自己的报错都是 JSON；拿到非 JSON（多半是平台层把请求掐断了，
+        // 例如请求体过大或处理超时）就必须区分开 —— 否则只剩一句
+        // "服务器错误"，连往哪个方向查都不知道。
+        const raw = await res.text().catch(() => "");
+        let msg = "";
+        try {
+          msg = String(JSON.parse(raw)?.error || "");
+        } catch {
+          msg = raw.trim().startsWith("<")
+            ? `请求被服务器中途中断（HTTP ${res.status}）—— 多半是图片过大或处理超时，换张小一点的图再试`
+            : "";
+        }
+        throw new Error(msg || `HTTP ${res.status}`);
       }
 
       const data = await res.json();

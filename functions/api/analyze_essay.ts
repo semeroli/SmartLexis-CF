@@ -72,6 +72,24 @@ export async function onRequestPost(context: any) {
     const safeImages = essayImages.slice(0, 2);
     if (safeImages.length === 0) throw new AuthError(400, "未提供有效图片");
 
+    // 体量闸门。Cloudflare 免费版给单个请求的 CPU 时间只有 10 毫秒，而解析超大
+    // base64、再 JSON.stringify 成一个几 MB 的请求体转发给 AI，都是实打实的 CPU
+    // 开销 —— 一旦超限，平台会**直接掐断请求**，前端只能看到一句"服务器错误"，
+    // 排查起来毫无线索。与其被平台默默掐断，不如在这里明确告诉老师"图太大了"。
+    // （前端现在会先把图压到长边 1600px，正常一张约 200～500KB；走到这条说明
+    //   压缩没生效，例如浏览器太老或手动绕过了前端。）
+    const totalChars = safeImages.reduce(
+      (n: number, s: any) => n + (typeof s === "string" ? s.length : 0),
+      0
+    );
+    const MAX_TOTAL_CHARS = 8 * 1024 * 1024;
+    if (totalChars > MAX_TOTAL_CHARS) {
+      throw new AuthError(
+        413,
+        `图片过大（约 ${(totalChars / 1024 / 1024).toFixed(1)}MB），请重新拍摄或选择更小的图片后再试`
+      );
+    }
+
     // ── 归属与身份：服务端说了算 ────────────────────
     let studentId: string;
     let teacherId: string;
