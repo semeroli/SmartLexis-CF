@@ -485,12 +485,23 @@ export const DEFAULT_MODEL_CHAIN: Record<AiModelKind, string[]> = {
     "Shanghai_AI_Laboratory/Intern-S2-Preview",
     "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
   ],
-  // 2026-10-08 实测（用户账号）：前两个 200 且有正文；GLM-5.2 只回了推理内容、
-  // 正文为空；GLM-4.7-Flash 回 429「模型当前访问量过大」。所以按可用性排序。
+  // 2026-10-09 用「与线上完全相同的提示词与参数」逐个实测（4 个全军覆没）：
+  //   ⏱ Qwen/Qwen3.8-Flash-Next           超时（40 秒**没有任何回应**）
+  //   ⏱ deepseek-ai/DeepSeek-V4.1-Flash   超时（同上）
+  //   ⏱ ZhipuAI/GLM-5.2                   超时（同上）
+  //   ❌ ZhipuAI/GLM-4.7-Flash            429 限流
+  //   ✅ Shanghai_AI_Laboratory/Intern-S2-Preview   200 / 22 秒 / 1143 字正文
+  //
+  // ⚠️ 注意是「没有任何回应」，不是报错 —— 前一天这几个还都能正常返回（200 有正文）。
+  // 推测与魔搭免费额度耗尽 / 平台侧调整有关。这就是"降级链"存在的意义：
+  // 平台一变，只要链里还有活着的，功能就不会整块失效。
+  //
+  // ⇒ 把唯一实测可用的提到首位。它读图、纯文本都能干，于是整套系统统一到它。
+  //   后面几个保留作备用（万一它将来也挂了，还有得试）。
   text: [
+    "Shanghai_AI_Laboratory/Intern-S2-Preview",
     "Qwen/Qwen3.8-Flash-Next",
     "deepseek-ai/DeepSeek-V4.1-Flash",
-    "ZhipuAI/GLM-5.2",
     "ZhipuAI/GLM-4.7-Flash",
   ],
 };
@@ -511,6 +522,20 @@ const lastGoodModel: Partial<Record<AiModelKind, string>> = {};
  * 可用的模型永久拉黑。
  */
 const deadModels = new Set<string>();
+
+/**
+ * 最近一次「毫无回应地超时」的时间（isolate 级），用于**短期冷却**。
+ *
+ * 2026-10-09 实测：有好几个模型是"请求发出去、40 秒一个字都不回"（不是报错）。
+ * 这种模型一旦排在靠前的位置，每次调用都要在这里白等几十秒，把整个预算吃光，
+ * 后面的候选一个都轮不上。
+ *
+ * 所以：某个模型**用满了它自己的单模型超时**（= 确实没回应），就冷却 2 分钟不再试。
+ * ⚠️ 只冷却"用满超时"这一种情况 —— 如果只是预算快用完了才 abort（perTry 远小于
+ * 单模型超时），那不能怪模型，不计入冷却。
+ */
+const timeoutCoolDown = new Map<string, number>();
+const TIMEOUT_COOLDOWN_MS = 2 * 60 * 1000;
 
 /** MODELSCOPE_API_KEY 支持逗号分隔多个 key，轮换使用以摊平单 key 的速率限制 */
 export function modelscopeKeys(env: any): string[] {
@@ -583,6 +608,12 @@ export async function callModelscope(
   for (const model of chain) {
     // 已知「平台不提供 / 本账号无权限」的模型直接跳过，不浪费老师的时间
     if (deadModels.has(model)) continue;
+    // 刚刚毫无回应地超时过的模型，短期内也不再白等
+    const cooledAt = timeoutCoolDown.get(model);
+    if (cooledAt && Date.now() - cooledAt < TIMEOUT_COOLDOWN_MS) {
+      attempts.push({ model, result: "刚超时过，暂时跳过" });
+      continue;
+    }
     const left = budgetMs - (Date.now() - startedAt);
     if (left <= 2500) {
       attempts.push({ model, result: "总时间已用完，未及尝试" });
@@ -645,9 +676,13 @@ export async function callModelscope(
       return { content, model, attempts };
     } catch (e: any) {
       clearTimeout(timer);
+      const aborted = e?.name === "AbortError";
+      // 用满单模型超时 ⇒ 确认是"这个模型压根没回应"，纳入冷却；
+      // 若只是因为预算不够才 abort，那不能怪模型，不计。
+      if (aborted && perTry >= timeoutMs) timeoutCoolDown.set(model, Date.now());
       attempts.push({
         model,
-        result: e?.name === "AbortError" ? `超时(${perTry}ms)` : "请求异常",
+        result: aborted ? `超时(${perTry}ms)` : "请求异常",
         note: String(e?.message || e).slice(0, 160),
       });
     }
