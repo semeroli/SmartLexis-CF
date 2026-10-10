@@ -779,3 +779,149 @@ export async function callModelscope(
 
   throw new HttpError(502, `AI 服务暂不可用（${detail}）`);
 }
+
+// ─────────────────────────────────────────────────────────────
+// 模型体检（公开自检用，配 /api/version?probe=1）
+//
+// 为什么需要它：
+//   线上 AI 一出问题，我们分不清是「平台侧挂了 / 免费额度用完了」还是
+//   「我们自己的代码有问题」。而要在线上复现，就必须登录、传图、等 30 秒，
+//   排查一次要麻烦老师好几步。
+//   这个函数把「对着候选链挨个点名」做成**一次请求**：谁活着、谁报什么错、
+//   各花多久、回来的正文有多长，一次全看见。
+//
+// ⚠️ 它刻意**不碰** callModelscope 的三个 isolate 状态
+//   （lastGoodModel / deadModels / timeoutCoolDown）——
+//   体检就是体检，不能顺手把真实调用要用的判断改掉。
+// ─────────────────────────────────────────────────────────────
+
+/** 64×64 纯白 PNG。用来做视觉模型的「你能不能真读到一张图」最小验证。 */
+const PROBE_TINY_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAXklEQVR4nO3PMQ0AMAzAsPInvYLYYVWKESTzjhsd8KsBrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BbQHKU9LC7/CP1AAAAABJRU5ErkJggg==";
+
+export interface AiProbeItem {
+  model: string;
+  status: string;
+  ms: number;
+  textChars?: number;
+  note?: string;
+}
+
+export interface AiProbeResult {
+  kind: AiModelKind;
+  endpoint: string;
+  chain: string[];
+  perModelTimeoutMs: number;
+  results: AiProbeItem[];
+}
+
+export async function probeAiChain(
+  env: any,
+  kind: AiModelKind,
+  opts: { perModelTimeoutMs?: number; totalBudgetMs?: number } = {}
+): Promise<AiProbeResult> {
+  const keys = modelscopeKeys(env);
+  const chain = modelscopeModelChain(env, kind);
+  const endpoint = aiEndpoint(env, kind);
+  const perModelTimeoutMs = opts.perModelTimeoutMs ?? 8000;
+  const budgetMs = opts.totalBudgetMs ?? 26000;
+  const startedAt = Date.now();
+  const results: AiProbeItem[] = [];
+
+  const messages =
+    kind === "vision"
+      ? [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "这张图是什么颜色？只回答颜色名。" },
+              { type: "image_url", image_url: { url: PROBE_TINY_PNG } },
+            ],
+          },
+        ]
+      : [{ role: "user", content: "请只回复两个字：正常" }];
+
+  for (const model of chain) {
+    if (!keys.length) {
+      results.push({ model, status: "❌ MODELSCOPE_API_KEY 未配置", ms: 0 });
+      continue;
+    }
+    const left = budgetMs - (Date.now() - startedAt);
+    if (left < perModelTimeoutMs / 2) {
+      results.push({ model, status: "未测（总时间已用完）", ms: 0 });
+      continue;
+    }
+    const t0 = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(perModelTimeoutMs, left));
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${keys[0]}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, temperature: 0, max_tokens: 32, stream: false }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const raw = await res.text().catch(() => "");
+      let content = "";
+      try {
+        const d: any = JSON.parse(raw);
+        const msg = d?.choices?.[0]?.message || {};
+        content = String(msg.content || msg.reasoning_content || "");
+      } catch (_) {}
+      results.push({
+        model,
+        status: res.ok ? "✅ HTTP 200" : `❌ HTTP ${res.status}`,
+        ms: Date.now() - t0,
+        textChars: content.length,
+        note: (content || raw).slice(0, 200).replace(/\s+/g, " "),
+      });
+    } catch (e: any) {
+      clearTimeout(timer);
+      const aborted = e?.name === "AbortError";
+      results.push({
+        model,
+        status: aborted ? "⏱ 无任何回应（超时）" : "❌ 请求异常",
+        ms: Date.now() - t0,
+        note: String(e?.message || e).slice(0, 160),
+      });
+    }
+  }
+
+  return { kind, endpoint, chain, perModelTimeoutMs, results };
+}
+
+/**
+ * 体检闸门：同一个实例 30 秒内只允许体检一次。
+ * 体检会真花掉一次模型调用，放任连点等于把本就不宽裕的免费额度打光。
+ * 拿不到闸门（比如 D1 抽风）时不拦 —— 排查优先。
+ */
+let aiProbeTableReady = false;
+
+export async function claimAiProbe(
+  env: any,
+  cooldownMs = 30000
+): Promise<{ ok: boolean; retryAfterSec: number }> {
+  try {
+    if (!env?.DB) return { ok: true, retryAfterSec: 0 };
+    if (!aiProbeTableReady) {
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS ai_probe (id TEXT PRIMARY KEY, at TEXT)`
+      ).run();
+      aiProbeTableReady = true;
+    }
+    const row: any = await env.DB.prepare(`SELECT at FROM ai_probe WHERE id = 'last'`).first();
+    if (row?.at) {
+      const elapsed = Date.now() - new Date(row.at).getTime();
+      if (elapsed >= 0 && elapsed < cooldownMs) {
+        return { ok: false, retryAfterSec: Math.ceil((cooldownMs - elapsed) / 1000) };
+      }
+    }
+    await env.DB.prepare(`INSERT OR REPLACE INTO ai_probe (id, at) VALUES ('last', ?)`)
+      .bind(new Date().toISOString())
+      .run();
+    return { ok: true, retryAfterSec: 0 };
+  } catch (_) {
+    return { ok: true, retryAfterSec: 0 };
+  }
+}
