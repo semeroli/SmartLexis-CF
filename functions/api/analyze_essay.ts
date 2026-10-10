@@ -146,9 +146,13 @@ export async function onRequestPost(context: any) {
         },
         { role: "user", content: parts.join("\n") },
       ],
-      // 单模型 15 秒、整条链 30 秒。输出里不再需要重复一遍作文原文，
-      // 所以 2000 token 足够，耗时也比原来读图评分短得多。
-      { temperature: 0.2, maxTokens: 2000, timeoutMs: 15000, totalBudgetMs: 30000 }
+      // 单模型 18 秒、整条链 30 秒。
+      // 2026-10-10 线上实测（公开体检接口打同一模型/同一平台）：
+      //   评分 JSON（约 416 字）→ Qwen3.8-Flash-Next 13.9 秒
+      //   评分 JSON（约 629 字）→ DeepSeek-V4.1-Flash 13.4 秒
+      // 所以单模型超时给 18 秒（留 4 秒余量），30 秒总预算还能让第二个模型
+      // 再试 12 秒。⚠️ 别再压到 15 秒 —— 那点余量不够，会把本来能成的请求掐掉。
+      { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 30000 }
     );
 
     // 记下是哪个模型出的卷、路上还试过谁 ——

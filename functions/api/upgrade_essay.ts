@@ -62,7 +62,8 @@ ${content}
         { role: "user", content: prompt },
       ],
       // 单个模型最多 15 秒、总预算 30 秒（缘由见 analyze_essay.ts 同一处注释）
-      { temperature: 0.7, maxTokens: 3500, timeoutMs: 15000, totalBudgetMs: 30000 }
+      // 这个接口产出最长（整篇升格范文，maxTokens 3500），所以单模型给到 22 秒。
+      { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 31000 }
     );
     console.log(`作文升格使用模型: ${model}`);
 
