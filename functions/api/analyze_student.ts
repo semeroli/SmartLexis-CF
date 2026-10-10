@@ -67,7 +67,9 @@ export async function onRequestPost(context: any) {
         { role: "system", content: "你是资深语文教育专家。" },
         { role: "user", content: prompt },
       ],
-      { temperature: 0.7, maxTokens: 2500 }
+      // 单个模型最多 15 秒、总预算 30 秒 —— 保证排在后面的模型也有公平机会
+      // （详细缘由见 analyze_essay.ts 的同一处注释）
+      { temperature: 0.7, maxTokens: 2500, timeoutMs: 15000, totalBudgetMs: 30000 }
     );
     console.log(`学情分析使用模型: ${model}`);
 

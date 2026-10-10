@@ -528,41 +528,41 @@ export function aiEndpoint(env: any, kind: AiModelKind): string {
 /** 内置候选链：前面失败就自动试后面的。 */
 export const DEFAULT_MODEL_CHAIN: Record<AiModelKind, string[]> = {
   /**
-   * 视觉链 —— 2026-10-08 用「canvas 画诗句、看模型能否原文读出」的方式，
-   * 对 10 个候选逐一实测（只回 HTTP 200 不算数，必须真读到图）。结果：
+   * 视觉链 —— 2026-10-10 账号恢复后**重新实测**（发一张 64×64 白图，问"什么颜色"）：
    *
-   *   ✅ Shanghai_AI_Laboratory/Intern-S2-Preview   200 / 1.2s / 原文读出 ✅
-   *   ⏳ deepseek-ai/DeepSeek-V4-Flash-Vision-Exp   503「SGLang 正在加载模型」（冷启动）
-   *   ❌ Shanghai_AI_Laboratory/Intern-S1(-mini)    401 本账号无权限
-   *   ❌ Qwen/Qwen3-VL-8B / 235B、Qwen/QVQ-72B       400 平台不提供
-   *   ❌ PaddlePaddle/ERNIE-4.5-VL-28B、InternVL3_5  401 本账号无权限
-   *   ❌ ZhipuAI/GLM-4.6V(-Flash)                    400 平台不提供
+   *   ✅ deepseek-ai/DeepSeek-V4-Flash-Vision-Exp   200 / 2.0s / 正文「白色」干净无杂质
+   *   ⚠️ Shanghai_AI_Laboratory/Intern-S2-Preview   200 / 2.4s / 但正文是 "Thinking Process: …"
+   *   ❌ Qwen/Qwen3-VL-8B、Qwen/QVQ-72B              400 Invalid model id（平台没有）
+   *   ❌ ZhipuAI/GLM-4.6V(-Flash)                    400 has no provider supported
    *
-   * 所以只留两个：一个已验证能用且快（1.2 秒，不是冷启动），一个是唯一
-   * 另一个「有提供商」的（它在冷启动，留着当备胎）。其余全删 —— 留着只会
-   * 让每次阅卷多花几秒去撞墙（虽然 deadModels 会兜住，但没必要）。
+   * 🔴 顺序调换的原因（一次真实事故）：
+   *   15:17 老师提交作文阅卷，结果 ——
+   *     Intern-S2-Preview → 超时(32000ms)，把预算吃光
+   *     DeepSeek-V4-Flash-Vision-Exp → 只剩 2818ms，也被判超时
+   *   而实测后者 2 秒就能答完。**排在前面的慢模型会把整条链拖死。**
+   *
+   * ⇒ 快的、干净的排第一；Intern-S2-Preview 留作备胎（它能读图，只是慢+爱写思考过程）。
    */
   vision: [
-    "Shanghai_AI_Laboratory/Intern-S2-Preview",
     "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
-  ],
-  // 2026-10-09 用「与线上完全相同的提示词与参数」逐个实测（4 个全军覆没）：
-  //   ⏱ Qwen/Qwen3.8-Flash-Next           超时（40 秒**没有任何回应**）
-  //   ⏱ deepseek-ai/DeepSeek-V4.1-Flash   超时（同上）
-  //   ⏱ ZhipuAI/GLM-5.2                   超时（同上）
-  //   ❌ ZhipuAI/GLM-4.7-Flash            429 限流
-  //   ✅ Shanghai_AI_Laboratory/Intern-S2-Preview   200 / 22 秒 / 1143 字正文
-  //
-  // ⚠️ 注意是「没有任何回应」，不是报错 —— 前一天这几个还都能正常返回（200 有正文）。
-  // 推测与魔搭免费额度耗尽 / 平台侧调整有关。这就是"降级链"存在的意义：
-  // 平台一变，只要链里还有活着的，功能就不会整块失效。
-  //
-  // ⇒ 把唯一实测可用的提到首位。它读图、纯文本都能干，于是整套系统统一到它。
-  //   后面几个保留作备用（万一它将来也挂了，还有得试）。
-  text: [
     "Shanghai_AI_Laboratory/Intern-S2-Preview",
+  ],
+  /**
+   * 文本链 —— 2026-10-10 账号恢复后**重新实测**（同一句提示词、max_tokens=600）：
+   *
+   *   ✅ Qwen/Qwen3.8-Flash-Next          200 / 4.1s / 正文 77 字，**干净**
+   *   ✅ deepseek-ai/DeepSeek-V4.1-Flash  200 / 5.0s / 正文 98 字，**干净**
+   *   ⚠️ Shanghai_AI_Laboratory/Intern-S2-Preview  200 / 7.8s / 正文 2344 字，**开头全是
+   *        "Thinking Process: …"**（它把思考过程写进 content，且很长 —— 60 秒都说不完）
+   *   ❌ ZhipuAI/GLM-4.7-Flash            429「该模型当前访问量过大」
+   *
+   * ⚠️ 10-09 判「Qwen / DeepSeek 超时」是在账号被平台拦的那段时间做的，那次结论作废。
+   *   同一个模型现在 4~5 秒就答完。**这就是降级链的价值：平台一变，重排一次就好。**
+   */
+  text: [
     "Qwen/Qwen3.8-Flash-Next",
     "deepseek-ai/DeepSeek-V4.1-Flash",
+    "Shanghai_AI_Laboratory/Intern-S2-Preview",
     "ZhipuAI/GLM-4.7-Flash",
   ],
 };
@@ -647,6 +647,48 @@ export interface AiCallResult {
   content: string;
   model: string;
   attempts: AiAttempt[];
+}
+
+/**
+ * 去掉「思考过程」污染 —— 只在**能明确判断**的时候动手，否则原样返回。
+ *
+ * 背景（2026-10-10 实测）：`Shanghai_AI_Laboratory/Intern-S2-Preview` 会把推理过程
+ * 直接写进 `content`，形如
+ *   "Thinking Process:\n\n1.  **Analyze the Request:** … 2. **Final Answer:** …"
+ * 而 `callModelscope` 原本只看 `reasoning_content`，对这种情况毫无察觉，
+ * 于是老师会在学情分析里看到一大段"分析我的要求…"。
+ *
+ * ⚠️ 这里做得非常保守：
+ *   · 只有**开头**就是思考标记时才进入处理（正常正文绝不受影响）
+ *   · 只有**找得到明确的"正文开始"标记**时才截断
+ *   · 找不到标记 ⇒ 原样返回（宁可留着，也不能把真正的答案剪掉）
+ *   · 截断后如果剩余过短（<20 字），认定是误判 ⇒ 退回原文
+ *
+ * 为什么不用「模型内部会自己分开」来回避：因为这是上游的返回结构问题，
+ * 我们控制不了；能做的只有"降级链里优先选不这么干的模型" + "兜一层网"。
+ */
+export function stripThinkingNoise(raw: string): string {
+  const s = String(raw || "").trim();
+  if (!/^(thinking\s*process|reasoning\b|思考过程|推理过程|我的思考)/i.test(s)) return s;
+
+  const markers: RegExp[] = [
+    /\*\*\s*(final answer|final response|answer|response|final)\s*\*{0,2}\s*[:：]/i,
+    /(最终回答|最终答案|答案如下|正文如下|回复如下|我的回答|结果如下|分析如下|以下是[\u4e00-\u9fa5]{0,6})\s*[:：]/,
+    /^\s*#{1,3}\s*(总体评价|一[、.]\s*总体评价)/m,
+  ];
+
+  let best: { index: number; len: number } | null = null;
+  for (const m of markers) {
+    const hit = s.match(m);
+    if (hit && typeof hit.index === "number" && hit.index > 0) {
+      if (!best || hit.index < best.index) best = { index: hit.index, len: hit[0].length };
+    }
+  }
+  if (!best) return s;
+
+  // 从"正文开始"标记之后取，并把残留的星号/冒号/空白擦干净
+  const tail = s.slice(best.index + best.len).replace(/^[\s*:：]+/, "").trim();
+  return tail.length >= 12 ? tail : s;
 }
 
 /**
@@ -740,7 +782,9 @@ export async function callModelscope(
 
       const data: any = await res.json().catch(() => null);
       const msg = data?.choices?.[0]?.message || {};
-      const content = String(msg.content ?? "").trim();
+      const rawContent = String(msg.content ?? "").trim();
+      const stripped = stripThinkingNoise(rawContent);
+      const content = stripped;
       const reasoning = String(msg.reasoning_content ?? "").trim();
 
       if (!content) {

@@ -133,7 +133,8 @@ export async function onRequestPost(context: any) {
         { role: "system", content: "你是语文出题专家。" },
         { role: "user", content: prompt },
       ],
-      { temperature: 0.7, maxTokens: 3000 }
+      // 单个模型最多 15 秒、总预算 30 秒（缘由见 analyze_essay.ts 同一处注释）
+      { temperature: 0.7, maxTokens: 3000, timeoutMs: 15000, totalBudgetMs: 30000 }
     );
     console.log(`专项练习使用模型: ${model}`);
 

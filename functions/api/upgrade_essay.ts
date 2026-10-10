@@ -61,7 +61,8 @@ ${content}
         { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
         { role: "user", content: prompt },
       ],
-      { temperature: 0.7, maxTokens: 3500 }
+      // 单个模型最多 15 秒、总预算 30 秒（缘由见 analyze_essay.ts 同一处注释）
+      { temperature: 0.7, maxTokens: 3500, timeoutMs: 15000, totalBudgetMs: 30000 }
     );
     console.log(`作文升格使用模型: ${model}`);
 
