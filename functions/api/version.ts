@@ -37,7 +37,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-heartbeat-ab";
+const BUILD = "2026-10-10-heartbeat-json";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -96,10 +96,30 @@ export async function onRequestGet(context: any) {
   // 它不花额度，所以**不设冷却**，可以连测。
   if (url.searchParams.get("tick") === "1") {
     const rawSec = Number(url.searchParams.get("seconds") || "");
+    const sec = Number.isFinite(rawSec) && rawSec > 0 ? Math.min(Math.round(rawSec), 120) : 60;
+
+    // &json=1 → **真·非流式对照组**：什么都不发，干等到时间够，再一次性返回普通 JSON。
+    // 这是唯一能和"当初被掐断那种请求"对得上的形状 ——
+    // 上面的 buffered 虽然也不发字节，但响应头仍是 text/event-stream、机身仍是流，
+    // 拿它当对照会把「Content-Type / 响应是不是流」这个变量漏掉。
+    if (url.searchParams.get("json") === "1") {
+      const t0 = Date.now();
+      await new Promise((r) => setTimeout(r, sec * 1000));
+      return jsonResponse(
+        {
+          mode: "json（真·非流式）",
+          seconds: sec,
+          note: "没被平台掐断才可能看到这一行",
+          serverElapsedMs: Date.now() - t0,
+        },
+        200,
+        noStore
+      );
+    }
+
     return probeHeartbeat({
-      seconds: Number.isFinite(rawSec) && rawSec > 0 ? rawSec : undefined,
-      // &buffer=1 → 对照组：过程一个字节都不发，跑完一次性吐出去。
-      // 用来证明"活得更久"确实是「一直在传字节」带来的，不是平台恰好变宽松了。
+      seconds: sec,
+      // &buffer=1 → 半对照：头和机身都还是流，但过程一个字节都不发。
       buffered: url.searchParams.get("buffer") === "1",
     });
   }
