@@ -4,6 +4,7 @@ import {
   readAiDiag,
   probeAiChain,
   claimAiProbe,
+  keyFingerprint,
   type AiModelKind,
 } from "../../shared/api";
 
@@ -23,7 +24,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-self-probe";
+const BUILD = "2026-10-10-key-fingerprint";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -38,6 +39,18 @@ export async function onRequestGet(context: any) {
     .map((s: string) => s.trim())
     .filter(Boolean);
 
+  // 密钥指纹：让用户能在自己电脑上对同一个 Key 算同一个指纹，一比就知道
+  // 「线上跑的到底是不是我手上这把」。只给 8 位哈希，反推不出 Key。
+  let keyFp = "（未配置）";
+  if (keys.length) {
+    try {
+      const fp = await keyFingerprint(keys[0]);
+      keyFp = `${fp}（长度 ${keys[0].length}）`;
+    } catch (_) {
+      keyFp = "（指纹计算失败）";
+    }
+  }
+
   // 最近一次 AI 调用的"行车记录"。phase 停在 started 就说明中途被平台掐断了。
   let lastAiCall: any = null;
   try {
@@ -48,6 +61,7 @@ export async function onRequestGet(context: any) {
     build: BUILD,
     checks: {
       MODELSCOPE_API_KEY: keys.length ? `已配置（${keys.length} 个）` : "❌ 未配置",
+      MODELSCOPE_API_KEY_指纹: keyFp,
       MODELSCOPE_VISION_MODEL: env.MODELSCOPE_VISION_MODEL || "（未设，用内置候选链）",
       MODELSCOPE_TEXT_MODEL: env.MODELSCOPE_TEXT_MODEL || "（未设，用内置候选链）",
       MODELSCOPE_ENDPOINT: env.MODELSCOPE_ENDPOINT || "（未设，用魔搭默认）",

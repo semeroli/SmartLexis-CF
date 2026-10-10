@@ -606,6 +606,24 @@ export function modelscopeKeys(env: any): string[] {
     .filter(Boolean);
 }
 
+/**
+ * 密钥指纹：SHA-256 前 8 位。
+ *
+ * 用途：线上 AI 失效时，最常见的两种原因是
+ *   ① 账号本身没资格（平台驳回）
+ *   ② 平台上存的那把 Key，跟手上能用的那把**不是同一把**
+ * 这两种从外部看起来一模一样（都是失败），但修法完全不同。
+ *
+ * 把「线上存的是哪一把」用指纹暴露出来，再让用户对自己的 Key 算同一个指纹
+ * 一比 —— 是不是同一把，一目了然。
+ *
+ * ⚠️ 只取 8 位十六进制、且不可反推（SHA-256 是单向的），公开在探针里是安全的。
+ *    绝不能把 Key 本身、或它的可逆变形暴露到公开接口上。
+ */
+export async function keyFingerprint(key: string): Promise<string> {
+  return (await sha256Hex(key)).slice(0, 8);
+}
+
 export function modelscopeModelChain(env: any, kind: AiModelKind): string[] {
   const specific = kind === "vision" ? env?.MODELSCOPE_VISION_MODEL : env?.MODELSCOPE_TEXT_MODEL;
   const merged = [
