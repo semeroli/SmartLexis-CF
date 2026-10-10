@@ -1,11 +1,15 @@
 import {
   callModelscope,
+  callModelscopeStream,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
   jsonResponse,
+  pipeAiStream,
   recordAiUsage,
   requireUser,
+  stripThinkingNoise,
+  wantsStream,
 } from "../../shared/api";
 
 // 作文升格。会消耗 AI 额度，必须登录 + 过每日配额。
@@ -54,17 +58,30 @@ ${content}
 （此处为解析内容）
 `;
 
-    const { content: text, model } = await callModelscope(
-      env,
-      "text",
-      [
-        { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
-        { role: "user", content: prompt },
-      ],
-      // 单个模型最多 15 秒、总预算 30 秒（缘由见 analyze_essay.ts 同一处注释）
-      // 这个接口产出最长（整篇升格范文，maxTokens 3500），所以单模型给到 22 秒。
-      { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 31000 }
-    );
+    const messages = [
+      { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
+      { role: "user", content: prompt },
+    ];
+    // 这个接口产出最长（整篇升格范文，maxTokens 3500），所以单模型给到 22 秒。
+    const AI_OPTS = { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 31000 };
+
+    // ── 流式：这个功能产出 2000～2800 字，是四个里最长的 ────────
+    // 按实测 30～45 字/秒，一次吐完要 50 秒以上 —— **远超平台单请求上限**，
+    // 所以它其实早就该改流式了。改成流式后，第一句话 1～2 秒就出现，
+    // 老师可以边看边读，不用盯着转圈等一分钟。
+    if (wantsStream(request)) {
+      const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
+      console.log(`作文升格（流式）使用模型: ${hs.model}`);
+      return pipeAiStream(hs.response, hs.model, {
+        transformFinal: stripThinkingNoise,
+        onComplete: async () => {
+          await recordAiUsage(env, user, "upgrade");
+          return {};
+        },
+      });
+    }
+
+    const { content: text, model } = await callModelscope(env, "text", messages, AI_OPTS);
     console.log(`作文升格使用模型: ${model}`);
 
     // 确认内容可用后才记一次用量

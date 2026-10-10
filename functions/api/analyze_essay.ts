@@ -3,14 +3,18 @@ import {
   assertStudentAccess,
   buildEssayReport,
   callModelscope,
+  callModelscopeStream,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
+  HttpError,
   isPlaceholderStudentId,
   jsonResponse,
+  pipeAiStream,
   recordAiUsage,
   requireUser,
   resolveOwnerTeacherId,
+  wantsStream,
 } from "../../shared/api";
 
 // 作文阅卷（**第二步：只评分**，2026-10-10 从"一遍过"拆出来）。
@@ -117,15 +121,12 @@ export async function onRequestPost(context: any) {
       `给出优缺点与升格建议，并严格按照系统提示的 JSON 格式输出。`
     );
 
-    const { content, model: usedModel, attempts } = await callModelscope(
-      env,
-      // 不读图了 ⇒ 走文本链。今天实测文本链里最快的模型 4～5 秒就有结果，
-      // 而且不会像视觉模型那样把整条链的时间预算吃光。
-      "text",
-      [
-        {
-          role: "system",
-          content: `你是资深语文阅卷组组长。
+    // 不读图了 ⇒ 走文本链。今天实测文本链里最快的模型 4～5 秒就有结果，
+    // 而且不会像视觉模型那样把整条链的时间预算吃光。
+    const messages = [
+      {
+        role: "system",
+        content: `你是资深语文阅卷组组长。
 请严格按照以下 JSON 格式输出，不要输出其他文字：
 
 {
@@ -143,17 +144,139 @@ export async function onRequestPost(context: any) {
 }
 
 注意：不要再输出作文原文（我们已经有了），只输出上面这些评分内容。`,
-        },
-        { role: "user", content: parts.join("\n") },
-      ],
-      // 单模型 18 秒、整条链 30 秒。
-      // 2026-10-10 线上实测（公开体检接口打同一模型/同一平台）：
-      //   评分 JSON（约 416 字）→ Qwen3.8-Flash-Next 13.9 秒
-      //   评分 JSON（约 629 字）→ DeepSeek-V4.1-Flash 13.4 秒
-      // 所以单模型超时给 18 秒（留 4 秒余量），30 秒总预算还能让第二个模型
-      // 再试 12 秒。⚠️ 别再压到 15 秒 —— 那点余量不够，会把本来能成的请求掐掉。
-      { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 30000 }
-    );
+      },
+      { role: "user", content: parts.join("\n") },
+    ];
+
+    // 单模型 18 秒、整条链 30 秒。
+    // 2026-10-10 线上实测（公开体检接口打同一模型/同一平台）：
+    //   评分 JSON（约 416 字）→ Qwen3.8-Flash-Next 13.9 秒
+    //   评分 JSON（约 629 字）→ DeepSeek-V4.1-Flash 13.4 秒
+    // 所以单模型超时给 18 秒（留 4 秒余量），30 秒总预算还能让第二个模型
+    // 再试 12 秒。⚠️ 别再压到 15 秒 —— 那点余量不够，会把本来能成的请求掐掉。
+    const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 30000 };
+
+    /**
+     * 从模型回答里把 JSON「抠」出来、校验、落库，最后拼出前端要的记录。
+     *
+     * 抽成函数是为了让**普通返回**和**流式收尾**两条路走完全一样的收尾逻辑 ——
+     * 否则很容易出现"流式能存、普通模式不存"这类只在线上某条路径出现的差异。
+     * 校验不通过就抛 HttpError，文案直接给老师看。
+     */
+    const finalizeEssayResult = async (content: string) => {
+      // 不能只剥开头的 ```json —— 预览版模型常写成「好的，以下是分析：\n```json\n{...}\n```」，
+      // 那样 JSON.parse 必失败。所以三步走：先截代码块，再从第一个 { 取到最后一个 }。
+      let raw = String(content).trim();
+      const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+      if (fence && fence[1].trim()) raw = fence[1].trim();
+      const braceOpen = raw.indexOf("{");
+      const braceClose = raw.lastIndexOf("}");
+      if (braceOpen >= 0 && braceClose > braceOpen) raw = raw.slice(braceOpen, braceClose + 1);
+
+      let result: any;
+      try {
+        result = JSON.parse(raw);
+      } catch (e) {
+        // 以前这里会把"格式异常"当成一份分析结果返回 200 —— 老师看到的就是一张
+        // 满屏 "?" 的空报告，还会被当成 AI 的结论。宁可明确报错让她重试一次。
+        console.error("JSON parse error:", raw.substring(0, 200));
+        throw new HttpError(502, "AI 返回的报告格式异常（可能被截断），请重新提交一次");
+      }
+
+      // ── 把「老师核对过的原文」钉回结果里 ──────────────────────────
+      // 拆分之后模型只负责评分，不再回传原文；而落库、历史记录、报告拼装
+      // 这三处都依赖 result.essay_text。所以在解析成功后统一注回去，
+      // 而且**以老师核对过的版本为准**（模型即便回了一段也一律覆盖）。
+      result.essay_text = essayText;
+      if (handwriting && !result.handwriting) result.handwriting = handwriting;
+
+      // 有原文是前提（上面已校验非空），所以只要看有没有分数就够了
+      const hasScore = result && result.score !== null && result.score !== undefined;
+      if (!hasScore) {
+        console.error("作文阅卷结果为空:", JSON.stringify(result).slice(0, 200));
+        throw new HttpError(502, "AI 没能给出评分，请重新点一次「开始批阅」重试");
+      }
+
+      // ⚠️ 不能让「模型说它评不了」混成一份 0 分报告。
+      // 原文现在由第一步提供、老师核对过，所以"认不出字"不再走这条路；
+      // 但模型仍可能回一句"无法评分"同时给 score=0 —— 直接落库展示的话，
+      // 老师会以为这篇作文被判了 0 分，比明确报错更糟。
+      const scoringStallWords =
+        /无法评分|不能评分|无法进行内容分析|内容不足|无法评价|无法给出评分|无法判断/;
+      const summaryRaw = String(result?.summary || "") + String(result?.weaknesses?.[0] || "");
+      const noContent =
+        Array.isArray(result?.strengths) &&
+        result.strengths.length === 0 &&
+        Array.isArray(result?.suggestions) &&
+        result.suggestions.length === 0;
+      if (Number(result?.score) === 0 && (scoringStallWords.test(summaryRaw) || noContent)) {
+        console.error("作文阅卷：模型表示无法评分 —", summaryRaw.slice(0, 120));
+        throw new HttpError(
+          502,
+          "AI 这次没能完成评分（可能认为原文内容不完整）。请检查原文是否完整，或重新点一次「开始批阅」"
+        );
+      }
+
+      // 到这里才算一次有效调用
+      await recordAiUsage(env, user, "essay");
+
+      // 写入 D1
+      const id = crypto.randomUUID();
+      const date = new Date().toISOString();
+      const analysisText = result.summary || "";
+
+      try {
+        await env.DB.prepare(
+          `INSERT INTO writing_records
+           (id, studentId, teacherId, title, essay_text, analysis, analysis_json, date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(
+            id,
+            studentId,
+            teacherId,
+            title,
+            essayText,
+            analysisText,
+            JSON.stringify(result),
+            date
+          )
+          .run();
+        console.log("D1 insert success");
+      } catch (dbErr: any) {
+        console.error("D1 insert error:", dbErr.message);
+        // 即使数据库写入失败，也返回分析结果
+      }
+
+      // ✅ 返回前端期望的 WritingRecord 格式
+      // 报告文本由 shared/api 的 buildEssayReport 统一拼装 —— history 接口读历史时
+      // 用的是同一个函数，两处不会各写一份而对不上。
+      const analysisMarkdown = buildEssayReport(result);
+
+      return {
+        id,
+        studentId,
+        teacherId,
+        title,
+        essay_text: essayText,
+        analysis: analysisMarkdown,
+        analysis_json: JSON.stringify(result),
+        date,
+      };
+    };
+
+    // ── 流式 ────────────────────────────────────────────────
+    // 评分报告是 JSON，正文没法直接看，所以前端拿增量算进度、收尾再渲染。
+    // 收益主要在"不贴着平台单请求上限"和"能看出确实在跑"。
+    if (wantsStream(request)) {
+      const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
+      console.log(`作文阅卷（流式）使用模型: ${hs.model}`);
+      return pipeAiStream(hs.response, hs.model, {
+        onComplete: async (full) => ({ result: await finalizeEssayResult(full) }),
+      });
+    }
+
+    const { content, model: usedModel, attempts } = await callModelscope(env, "text", messages, AI_OPTS);
 
     // 记下是哪个模型出的卷、路上还试过谁 ——
     // 以后平台再下架 / 改名模型，看日志就知道发生了什么。
@@ -162,110 +285,8 @@ export async function onRequestPost(context: any) {
         (attempts.length ? `（此前失败：${attempts.map((a) => `${a.model}:${a.result}`).join("、")}）` : "")
     );
 
-    // 把 JSON 从模型回答里「抠」出来。
-    // 不能只剥开头的 ```json —— 预览版模型常写成「好的，以下是分析：\n```json\n{...}\n```」，
-    // 那样 JSON.parse 必失败。所以三步走：先截代码块，再从第一个 { 取到最后一个 }。
-    let raw = String(content).trim();
-    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fence && fence[1].trim()) raw = fence[1].trim();
-    const braceOpen = raw.indexOf("{");
-    const braceClose = raw.lastIndexOf("}");
-    if (braceOpen >= 0 && braceClose > braceOpen) raw = raw.slice(braceOpen, braceClose + 1);
-
-    let result: any;
-    try {
-      result = JSON.parse(raw);
-    } catch (e) {
-      // 以前这里会把"格式异常"当成一份分析结果返回 200 —— 老师看到的就是一张
-      // 满屏 "?" 的空报告，还会被当成 AI 的结论。宁可明确报错让她重试一次。
-      console.error("JSON parse error:", raw.substring(0, 200));
-      return jsonResponse({
-        error: "AI 返回的报告格式异常（可能被截断），请重新提交一次",
-      }, 502, cors);
-    }
-
-    // ── 把「老师核对过的原文」钉回结果里 ──────────────────────────
-    // 拆分之后模型只负责评分，不再回传原文；而落库、历史记录、报告拼装
-    // 这三处都依赖 result.essay_text。所以在解析成功后统一注回去，
-    // 而且**以老师核对过的版本为准**（模型即便回了一段也一律覆盖）。
-    result.essay_text = essayText;
-    if (handwriting && !result.handwriting) result.handwriting = handwriting;
-
-    // 有原文是前提（上面已校验非空），所以只要看有没有分数就够了
-    const hasScore = result && result.score !== null && result.score !== undefined;
-    if (!hasScore) {
-      console.error("作文阅卷结果为空:", JSON.stringify(result).slice(0, 200));
-      return jsonResponse({
-        error: "AI 没能给出评分，请重新点一次「开始批阅」重试",
-      }, 502, cors);
-    }
-
-    // ⚠️ 不能让「模型说它评不了」混成一份 0 分报告。
-    // 原文现在由第一步提供、老师核对过，所以"认不出字"不再走这条路；
-    // 但模型仍可能回一句"无法评分"同时给 score=0 —— 直接落库展示的话，
-    // 老师会以为这篇作文被判了 0 分，比明确报错更糟。
-    const scoringStallWords =
-      /无法评分|不能评分|无法进行内容分析|内容不足|无法评价|无法给出评分|无法判断/;
-    const summaryRaw = String(result?.summary || "") + String(result?.weaknesses?.[0] || "");
-    const noContent =
-      Array.isArray(result?.strengths) &&
-      result.strengths.length === 0 &&
-      Array.isArray(result?.suggestions) &&
-      result.suggestions.length === 0;
-    if (Number(result?.score) === 0 && (scoringStallWords.test(summaryRaw) || noContent)) {
-      console.error("作文阅卷：模型表示无法评分 —", summaryRaw.slice(0, 120));
-      return jsonResponse({
-        error: "AI 这次没能完成评分（可能认为原文内容不完整）。请检查原文是否完整，或重新点一次「开始批阅」",
-      }, 502, cors);
-    }
-
-    // 到这里才算一次有效调用
-    await recordAiUsage(env, user, "essay");
-
-    // 写入 D1
-    const id = crypto.randomUUID();
-    const date = new Date().toISOString();
-    const analysisText = result.summary || "";
-
-    try {
-      await env.DB.prepare(
-        `INSERT INTO writing_records
-         (id, studentId, teacherId, title, essay_text, analysis, analysis_json, date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-        .bind(
-          id,
-          studentId,
-          teacherId,
-          title,
-          essayText,
-          analysisText,
-          JSON.stringify(result),
-          date
-        )
-        .run();
-      console.log("D1 insert success");
-    } catch (dbErr: any) {
-      console.error("D1 insert error:", dbErr.message);
-      // 即使数据库写入失败，也返回分析结果
-    }
-
-    // ✅ 返回前端期望的 WritingRecord 格式
-    // 报告文本由 shared/api 的 buildEssayReport 统一拼装 —— history 接口读历史时
-    // 用的是同一个函数，两处不会各写一份而对不上。
-    const analysisMarkdown = buildEssayReport(result);
-
-    return jsonResponse({
-      id,
-      studentId,
-      teacherId,
-      title,
-      essay_text: essayText,
-      analysis: analysisMarkdown,
-      analysis_json: JSON.stringify(result),
-      date,
-    }, 200, cors);
-
+    const record = await finalizeEssayResult(content);
+    return jsonResponse(record, 200, cors);
   } catch (err: any) {
     console.error("analyze_essay error:", err);
 

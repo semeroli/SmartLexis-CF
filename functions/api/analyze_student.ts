@@ -1,11 +1,15 @@
 import {
   callModelscope,
+  callModelscopeStream,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
   jsonResponse,
+  pipeAiStream,
   recordAiUsage,
   requireUser,
+  stripThinkingNoise,
+  wantsStream,
 } from "../../shared/api";
 
 interface StudentInput {
@@ -60,17 +64,31 @@ export async function onRequestPost(context: any) {
 
     // 模型名不再写死：交给 shared/api 的「模型降级链」——
     // 平台下架 / 改名模型时自动换到下一个可用的，不用改代码。
-    const { content: analysis, model } = await callModelscope(
-      env,
-      "text",
-      [
-        { role: "system", content: "你是资深语文教育专家。" },
-        { role: "user", content: prompt },
-      ],
-      // 单个模型最多 15 秒、总预算 30 秒 —— 保证排在后面的模型也有公平机会
-      // （详细缘由见 analyze_essay.ts 的同一处注释）
-      { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 30000 }
-    );
+    const messages = [
+      { role: "system", content: "你是资深语文教育专家。" },
+      { role: "user", content: prompt },
+    ];
+    // 单模型 20 秒、总预算 30 秒 —— 保证排在后面的模型也有公平机会
+    // （详细缘由见 analyze_essay.ts 的同一处注释）
+    const AI_OPTS = { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 30000 };
+
+    // ── 流式：老师要边生成边看 ──────────────────────────────
+    // 学情分析是一份 1000 字上下的长报告，等它一次性吐完要 20～30 秒。
+    // 改成流式之后，字一个一个出来，等待感基本没了，也不再贴着平台单请求上限。
+    if (wantsStream(request)) {
+      const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
+      console.log(`学情分析（流式）使用模型: ${hs.model}`);
+      return pipeAiStream(hs.response, hs.model, {
+        // 兜一层"思考过程"污染的网：流里没法提前判断，收尾时统一剥。
+        transformFinal: stripThinkingNoise,
+        onComplete: async () => {
+          await recordAiUsage(env, user, "analyze");
+          return { status: "ok" };
+        },
+      });
+    }
+
+    const { content: analysis, model } = await callModelscope(env, "text", messages, AI_OPTS);
     console.log(`学情分析使用模型: ${model}`);
 
     // 只有真的拿到内容才记一次用量

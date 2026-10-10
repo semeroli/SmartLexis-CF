@@ -25,6 +25,7 @@ import { cn, formatDay } from './lib/utils';
 import { SCORE_ITEMS, LITERACY_MAX, modernReadingTotal, TOTAL_MAX } from './lib/score';
 import {
   apiFetch,
+  apiStream,
   clearSession,
   getStoredUser,
   getToken,
@@ -412,6 +413,12 @@ export default function App() {
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiPrescription, setAiPrescription] = useState<string | null>(null);
+  // ── 「边生成边显示」（2026-10-10）────────────────────────────
+  // 免费模型只有 30～45 字/秒，长文（学情分析 / 专项练习 / 升格范文）等它一次吐完
+  // 要 30～60 秒，还顶着平台单请求上限。改成流式后文字一点点出来，等待感基本消失。
+  // streamChars 只用于"JSON 类输出"（题目、评分报告）—— 那些正文没法直接看，
+  // 就显示"已生成 xxx 字"让老师知道确实在跑。
+  const [streamChars, setStreamChars] = useState(0);
   const [activeAction, setActiveAction] = useState<'practice' | 'essay' | 'graph' | null>(null);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [actionContent, setActionContent] = useState<string | null>(null);
@@ -801,23 +808,38 @@ export default function App() {
 
   const generateAIAnalysis = async (student: Student) => {
     setIsGenerating(true);
+    setStreamChars(0);
+    // 先置空串而不是 null：置空后界面立刻切到"正在显示"分支，
+    // 第一个字一到就能渲染，不会再多一次状态切换。
+    setAiPrescription('');
     try {
-      const res = await apiFetch('/api/analyze_student', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ student })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setAiPrescription(data.analysis || "分析失败");
-      } else {
-        throw new Error(data.error || "分析失败");
-      }
+      await apiStream(
+        '/api/analyze_student?stream=1',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ student }),
+        },
+        {
+          // 报告是 Markdown，边到边渲染 —— 老师能看到它是"写"出来的，不是卡住了
+          onDelta: (full) => {
+            setAiPrescription(full);
+            setStreamChars(full.length);
+          },
+          // 收尾时以服务端给的最终正文为准：它会顺手剥掉个别模型混进来的"思考过程"
+          onDone: (payload) => {
+            if (typeof payload?.text === 'string' && payload.text.trim()) {
+              setAiPrescription(payload.text);
+            }
+          },
+        }
+      );
     } catch (err: any) {
-      console.error("AI Analysis Error:", err);
-      setAiPrescription("分析失败: " + err.message);
+      console.error('AI Analysis Error:', err);
+      setAiPrescription('分析失败: ' + err.message);
+    } finally {
+      setIsGenerating(false);
     }
-    finally { setIsGenerating(false); }
   };
 
   // ── 第一步：只认字 ────────────────────────────────────────────
@@ -868,6 +890,7 @@ export default function App() {
   const analyzeEssay = async () => {
     if (!essayTitle.trim() || !ocrText.trim()) return;
     setIsAnalyzingEssay(true);
+    setStreamChars(0);
     try {
       // 只告诉服务端"要批阅哪个学生"；批阅人是谁、记录归谁，由服务端按令牌决定
       const formData = new FormData();
@@ -876,26 +899,23 @@ export default function App() {
       formData.append('text', ocrText);
       formData.append('handwriting', ocrHandwriting);
 
-      const res = await apiFetch('/api/analyze_essay', { method: 'POST', body: formData });
-
-      if (!res.ok) {
-        // 服务端自己的报错都是 JSON；拿到非 JSON（多半是平台层把请求掐断了）
-        // 就必须区分开 —— 否则只剩一句"服务器错误"，连往哪个方向查都不知道。
-        const raw = await res.text().catch(() => '');
-        let msg = '';
-        try {
-          msg = String(JSON.parse(raw)?.error || '');
-        } catch {
-          msg = raw.trim().startsWith('<')
-            ? `请求被服务器中途中断（HTTP ${res.status}）—— 请稍等一会儿重新点一次「开始批阅」`
-            : '';
+      await apiStream(
+        '/api/analyze_essay?stream=1',
+        { method: 'POST', body: formData },
+        {
+          // 评分报告是 JSON，直接显示没意义 —— 只算进度。
+          // 但流式在这里仍有两个实打实的好处：
+          //   ① 请求全程在传字节，不再"上游闷头算 14 秒"，不容易被平台掐断；
+          //   ② 老师能看出确实在跑，而不是怀疑卡死了。
+          onDelta: (full) => setStreamChars(full.length),
+          onDone: (payload) => {
+            const record = payload?.result;
+            if (!record) return;
+            setEssayAnalysis(record);
+            setAnalysisHistory(prev => [record, ...prev]);
+          },
         }
-        throw new Error(msg || `HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      setEssayAnalysis(data);
-      setAnalysisHistory(prev => [data, ...prev]);
+      );
       // ⚠️ 这里**不再清空图片和原文**：批阅失败或想重批时，不用重新拍照、重新识别。
       //    要开始下一篇，老师自己删掉图片即可（删图会自动清掉识别结果）。
     } catch (err: any) {
@@ -903,6 +923,52 @@ export default function App() {
       alert("批阅失败: " + err.message);
     }
     finally { setIsAnalyzingEssay(false); }
+  };
+
+  /**
+   * 把升格输出拆成「范文 / 亮点解析 / 金句」，并顺手预生成朗读音频。
+   *
+   * 抽出来是因为它现在有两个调用时机：流式结束后拿最终正文调一次（正式结果），
+   * 而流中间显示的是**原始文本**（带【升格范文】这类标记）—— 那是给老师看
+   * "确实在写"，不是最终结果。所以解析只在收尾做一次。
+   */
+  const applyUpgradedEssay = (text: string) => {
+    const essayMatch = text.match(/【升格范文】([\s\S]*?)(?=【金句推荐】|【亮点解析】|$)/);
+    const goldenMatch = text.match(/【金句推荐】([\s\S]*?)(?=【亮点解析】|【升格范文】|$)/);
+    const analysisMatch = text.match(/【亮点解析】([\s\S]*?)(?=【金句推荐】|【升格范文】|$)/);
+
+    const essayContent = essayMatch ? essayMatch[1].trim() : "";
+    const analysisContent = analysisMatch ? analysisMatch[1].trim() : "";
+    const goldenSection = goldenMatch ? goldenMatch[1].trim() : "";
+
+    let displayContent = "";
+    if (essayContent) displayContent += `### 升格范文\n\n${essayContent}\n\n`;
+    if (analysisContent) displayContent += `### 亮点解析\n\n${analysisContent}`;
+
+    if (!displayContent) displayContent = text;
+
+    let sentences: { content: string; theme: string }[] = [];
+    if (goldenSection) {
+      sentences = goldenSection.split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .map(line => {
+          const match = line.match(/^[-*•\d.]*\s*(.*?)\s*[|:：]\s*(.*)$/);
+          if (match) {
+            return { content: match[1].trim(), theme: match[2].trim() };
+          }
+          const simpleMatch = line.match(/^[-*•\d.]*\s*(.*)$/);
+          if (simpleMatch && simpleMatch[1].trim()) {
+            return { content: simpleMatch[1].trim(), theme: '其他' };
+          }
+          return null;
+        })
+        .filter((s): s is { content: string; theme: string } => s !== null);
+    }
+
+    setGoldenSentences(sentences);
+    setActionContent(displayContent);
+    if (essayContent) preGenerateTTS(essayContent);
   };
 
   const fetchUpgradedEssay = async () => {
@@ -913,62 +979,35 @@ export default function App() {
     setIsActionLoading(true);
     setActiveAction('essay');
     setPreGeneratedAudio(null);
+    setGoldenSentences([]);
+    setStreamChars(0);
+    setActionContent(''); // 立刻切到"流式显示"分支
     try {
-      const res = await apiFetch('/api/upgrade_essay', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // 优先送**作文原文**。原来送的是"分析全文"（含标题、评分、评语、建议），
-        // 等于让模型对着一堆评语去升格作文，出来的范文自然不对味。
-        body: JSON.stringify({
-          title: essayAnalysis.title,
-          content: essayAnalysis.essay_text || essayAnalysis.analysis
-        })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: "生成失败 (服务器错误)" }));
-        throw new Error(errorData.error || `HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const text = data.text || "生成失败";
-
-      const essayMatch = text.match(/【升格范文】([\s\S]*?)(?=【金句推荐】|【亮点解析】|$)/);
-      const goldenMatch = text.match(/【金句推荐】([\s\S]*?)(?=【亮点解析】|【升格范文】|$)/);
-      const analysisMatch = text.match(/【亮点解析】([\s\S]*?)(?=【金句推荐】|【升格范文】|$)/);
-
-      const essayContent = essayMatch ? essayMatch[1].trim() : "";
-      const analysisContent = analysisMatch ? analysisMatch[1].trim() : "";
-      const goldenSection = goldenMatch ? goldenMatch[1].trim() : "";
-
-      let displayContent = "";
-      if (essayContent) displayContent += `### 升格范文\n\n${essayContent}\n\n`;
-      if (analysisContent) displayContent += `### 亮点解析\n\n${analysisContent}`;
-
-      if (!displayContent) displayContent = text;
-
-      let sentences: { content: string; theme: string }[] = [];
-      if (goldenSection) {
-        sentences = goldenSection.split('\n')
-          .map(line => line.trim())
-          .filter(line => line.length > 0)
-          .map(line => {
-            const match = line.match(/^[-*•\d.]*\s*(.*?)\s*[|:：]\s*(.*)$/);
-            if (match) {
-              return { content: match[1].trim(), theme: match[2].trim() };
-            }
-            const simpleMatch = line.match(/^[-*•\d.]*\s*(.*)$/);
-            if (simpleMatch && simpleMatch[1].trim()) {
-              return { content: simpleMatch[1].trim(), theme: '其他' };
-            }
-            return null;
+      await apiStream(
+        '/api/upgrade_essay?stream=1',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // 优先送**作文原文**。原来送的是"分析全文"（含标题、评分、评语、建议），
+          // 等于让模型对着一堆评语去升格作文，出来的范文自然不对味。
+          body: JSON.stringify({
+            title: essayAnalysis.title,
+            content: essayAnalysis.essay_text || essayAnalysis.analysis
           })
-          .filter((s): s is { content: string; theme: string } => s !== null);
-      }
-
-      setGoldenSentences(sentences);
-      setActionContent(displayContent);
-      if (essayContent) preGenerateTTS(essayContent);
+        },
+        {
+          // 升格范文 2000～2800 字，是四个功能里最长的 —— 一次吐完要 50 秒以上，
+          // 早就超过平台单请求上限。流式下第一句话 1～2 秒就出现。
+          onDelta: (full) => {
+            setActionContent(full);
+            setStreamChars(full.length);
+          },
+          onDone: (payload) => {
+            const text = typeof payload?.text === 'string' ? payload.text : '';
+            if (text.trim()) applyUpgradedEssay(text);
+          },
+        }
+      );
     } catch (err: any) {
       console.error("Upgrade Essay Error:", err);
       setActionContent("生成失败: " + err.message);
@@ -984,20 +1023,25 @@ export default function App() {
     setIsActionLoading(true);
     setActiveAction('practice');
     setPracticeData(null);
+    setStreamChars(0);
     try {
-      const res = await apiFetch('/api/generate_practice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ student: selectedStudent })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: "生成失败 (服务器错误)" }));
-        throw new Error(errorData.error || `HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      setPracticeData(data);
+      await apiStream(
+        '/api/generate_practice?stream=1',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ student: selectedStudent })
+        },
+        {
+          // ⚠️ 这个接口产出的是 JSON（题目＋选项＋解析），把原始 JSON 直接显示出来
+          //    对老师毫无意义。所以这里**只拿增量算进度**，让老师看出"确实在生成"，
+          //    真正的题目等收尾解析完再渲染。
+          onDelta: (full) => setStreamChars(full.length),
+          onDone: (payload) => {
+            if (payload?.result) setPracticeData(payload.result);
+          },
+        }
+      );
     } catch (err: any) {
       console.error("Generate Practice Error:", err);
       alert("生成失败: " + err.message);
@@ -1798,7 +1842,9 @@ export default function App() {
                               className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none"
                             >
                               {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
-                              {isAnalyzingEssay ? "AI 正在批阅…" : "② 开始批阅"}
+                              {isAnalyzingEssay
+                                ? streamChars > 0 ? `AI 正在批阅…已输出 ${streamChars} 字` : 'AI 正在批阅…'
+                                : "② 开始批阅"}
                             </button>
                           </div>
                         ) : (
@@ -1815,6 +1861,11 @@ export default function App() {
                           <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
                             <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce"><Sparkles className="w-10 h-10 text-emerald-600" /></div>
                             <p className="text-lg text-slate-500 font-black animate-pulse">AI 正在批阅这篇作文…</p>
+                            {streamChars > 0 && (
+                              <p className="text-xs font-bold text-emerald-600">
+                                模型已输出 {streamChars} 字，收尾时会自动整理成评分报告
+                              </p>
+                            )}
                           </div>
                         ) : essayAnalysis ? (
                           <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar prose prose-sm prose-indigo max-w-none prose-p:leading-relaxed">
@@ -1850,10 +1901,18 @@ export default function App() {
                       </button>
                     </div>
                     <div className="prose prose-sm max-w-none text-slate-700 leading-loose min-h-[120px]">
-                      {isGenerating ? (
+                      {aiPrescription ? (
+                        <>
+                          <ReactMarkdown>{aiPrescription}</ReactMarkdown>
+                          {isGenerating && (
+                            <div className="flex items-center gap-3 pt-4 text-xs font-bold text-indigo-500">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              正在生成…已写 {aiPrescription.length} 字
+                            </div>
+                          )}
+                        </>
+                      ) : isGenerating ? (
                         <div className="flex items-center justify-center py-10"><Loader2 className="w-8 h-8 animate-spin text-indigo-500" /></div>
-                      ) : aiPrescription ? (
-                        <ReactMarkdown>{aiPrescription}</ReactMarkdown>
                       ) : (
                         <p className="text-slate-400 italic">点击右上角按钮，让 AI 为您生成专属学习处方。</p>
                       )}
@@ -1865,7 +1924,9 @@ export default function App() {
                   <Card title="🚀 专项提分练习" subtitle="巩固薄弱知识点" delay={0.3}>
                     <button onClick={fetchPractice} disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
                       {isActionLoading && activeAction === 'practice' ? <Loader2 className="w-6 h-6 animate-spin" /> : <BookOpen className="w-6 h-6" />}
-                      开始专项练习
+                      {isActionLoading && activeAction === 'practice'
+                        ? (streamChars > 0 ? `AI 正在出题…已输出 ${streamChars} 字` : 'AI 正在出题…')
+                        : '开始专项练习'}
                     </button>
                     {practiceData && <InteractivePractice data={practiceData} />}
                   </Card>
@@ -1873,13 +1934,17 @@ export default function App() {
                   <Card title="📖 范文升格赏析" subtitle="AI 生成升格范文与金句" delay={0.4}>
                     <button onClick={fetchUpgradedEssay} disabled={isActionLoading || !essayAnalysis} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
                       {isActionLoading && activeAction === 'essay' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
-                      生成升格范文
+                      {isActionLoading && activeAction === 'essay'
+                        ? (streamChars > 0 ? `AI 正在写范文…已写 ${streamChars} 字` : 'AI 正在写范文…')
+                        : '生成升格范文'}
                     </button>
                     {actionContent && (
                       <div className="mt-8 space-y-6">
                         <div className="flex items-center justify-between">
                           <h4 className="text-lg font-bold text-slate-900">升格范文</h4>
-                          <button onClick={() => playTTS(actionContent)} disabled={isTTSLoading} className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all">
+                          {/* 生成中不让点朗读：这时显示的还是带标记的原始文本，
+                              读出来会把「【金句推荐】」念一遍。等收尾整理完再读。 */}
+                          <button onClick={() => playTTS(actionContent)} disabled={isTTSLoading || isActionLoading} className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full text-sm font-bold text-slate-600 hover:bg-slate-200 transition-all disabled:opacity-50">
                             {isPlayingAudio ? <Square className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                             {isTTSLoading ? '生成中...' : isPlayingAudio ? '停止朗读' : '朗读范文'}
                           </button>
@@ -1887,6 +1952,12 @@ export default function App() {
                         <div className="prose prose-sm max-w-none text-slate-700 leading-loose">
                           <ReactMarkdown>{actionContent}</ReactMarkdown>
                         </div>
+                        {isActionLoading && activeAction === 'essay' && (
+                          <div className="flex items-center gap-3 pt-2 text-xs font-bold text-emerald-600">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            正在生成…上面这条范文是边写边显示的，还没写完
+                          </div>
+                        )}
 
                         {goldenSentences.length > 0 && (
                           <div className="mt-8">

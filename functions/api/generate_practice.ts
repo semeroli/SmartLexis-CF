@@ -1,11 +1,15 @@
 import {
   callModelscope,
+  callModelscopeStream,
   checkAiQuota,
   corsHeadersFor,
   errorResponse,
+  HttpError,
   jsonResponse,
+  pipeAiStream,
   recordAiUsage,
   requireUser,
+  wantsStream,
 } from "../../shared/api";
 
 // 专项练习生成。会消耗 AI 额度，必须登录 + 过每日配额。
@@ -40,6 +44,29 @@ function parseLooseJson(raw: string): any | null {
 }
 
 const str = (v: any, fallback = ""): string => (typeof v === "string" ? v : fallback);
+
+/**
+ * 「模型输出的一坨文字」→「可用的练习数据」。
+ *
+ * 抽成函数是因为它现在有两条调用路径（普通 JSON 返回 / 流式收尾），
+ * 两条路必须用完全一样的解析与校验 —— 否则流式和普通模式会出现
+ * 「一个能过、一个报格式错」这种最难查的差异。
+ *
+ * 失败时抛 HttpError，文案是给老师看的。
+ */
+function buildPractice(raw: string) {
+  const parsed = parseLooseJson(raw);
+  if (!parsed) {
+    console.error("专项练习返回的不是合法 JSON:", raw.slice(0, 200));
+    throw new HttpError(502, "AI 返回的练习格式异常，请重新生成一次");
+  }
+  const practice = normalizePractice(parsed);
+  if (!practice.questions.length && !practice.writing_task) {
+    console.error("专项练习内容为空:", JSON.stringify(practice).slice(0, 200));
+    throw new HttpError(502, "AI 返回的练习内容不完整，请重新生成一次");
+  }
+  return practice;
+}
 
 /**
  * 补齐字段并保证类型正确。
@@ -126,29 +153,34 @@ export async function onRequestPost(context: any) {
 2. 难度适中，符合高考/中考水平。
 3. 必须返回合法的 JSON 格式。`;
 
-    const { content: raw, model } = await callModelscope(
-      env,
-      "text",
-      [
-        { role: "system", content: "你是语文出题专家。" },
-        { role: "user", content: prompt },
-      ],
-      // 单个模型最多 15 秒、总预算 30 秒（缘由见 analyze_essay.ts 同一处注释）
-      { temperature: 0.7, maxTokens: 3000, timeoutMs: 20000, totalBudgetMs: 30000 }
-    );
+    const messages = [
+      { role: "system", content: "你是语文出题专家。" },
+      { role: "user", content: prompt },
+    ];
+    // 单模型 20 秒、总预算 30 秒（缘由见 analyze_essay.ts 的同一处注释）
+    const AI_OPTS = { temperature: 0.7, maxTokens: 3000, timeoutMs: 20000, totalBudgetMs: 30000 };
+
+    // ── 流式 ────────────────────────────────────────────────
+    // 这个接口产出的是 JSON（题目＋选项＋解析），正文没法直接看，
+    // 所以前端只拿增量**算进度**（"已生成 xxx 字"），真正的题目等收尾解析完再渲染。
+    // 好处是老师能看出"确实在生成"，而不是对着一个转圈的按钮怀疑卡死了；
+    // 而且请求全程在传字节，不容易被平台的空闲判断掐断。
+    if (wantsStream(request)) {
+      const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
+      console.log(`专项练习（流式）使用模型: ${hs.model}`);
+      return pipeAiStream(hs.response, hs.model, {
+        onComplete: async (full) => {
+          const practice = buildPractice(full);
+          await recordAiUsage(env, user, "practice");
+          return { result: practice };
+        },
+      });
+    }
+
+    const { content: raw, model } = await callModelscope(env, "text", messages, AI_OPTS);
     console.log(`专项练习使用模型: ${model}`);
 
-    const parsed = parseLooseJson(raw);
-    if (!parsed) {
-      console.error("专项练习返回的不是合法 JSON:", raw.slice(0, 200));
-      return jsonResponse({ error: "AI 返回的练习格式异常，请重新生成一次" }, 502, cors);
-    }
-
-    const practice = normalizePractice(parsed);
-    if (!practice.questions.length && !practice.writing_task) {
-      console.error("专项练习内容为空:", JSON.stringify(practice).slice(0, 200));
-      return jsonResponse({ error: "AI 返回的练习内容不完整，请重新生成一次" }, 502, cors);
-    }
+    const practice = buildPractice(raw);
 
     // 确认内容可用后才记一次用量
     await recordAiUsage(env, user, "practice");

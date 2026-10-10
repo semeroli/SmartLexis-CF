@@ -3,6 +3,7 @@ import {
   jsonResponse,
   readAiDiag,
   probeAiChain,
+  probeAiStream,
   claimAiProbe,
   keyFingerprint,
   type AiModelKind,
@@ -20,11 +21,14 @@ import {
 //   分清是「平台侧挂了 / 额度用完了」还是「我们的代码有问题」。
 //   · ?probe=1           体检文本链（默认）
 //   · ?probe=1&kind=vision  体检视觉链（会真发一张 64×64 白图过去）
+//   · ?probe=1&stream=1  流式体检：不设总预算，专门测「流式响应能在平台活多久」，
+//                        用来确认长产出接口（作文升格）能不能一次做完。
+//                        加 &tokens=3000&timeout=60000 可把压力再调大。
 //   体检有 30 秒冷却 —— 它真花额度，不能放任连点。
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-two-step-tuned";
+const BUILD = "2026-10-10-streaming";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -108,7 +112,23 @@ export async function onRequestGet(context: any) {
 
   let probe: any;
   try {
-    probe = await probeAiChain(env, kind, { maxTokens, prompt, perModelTimeoutMs, models });
+    // ?stream=1 → 改做**流式**体检：它不设总预算，专门用来测
+    // 「流式响应到底能在平台活多久」。这决定了长产出接口（作文升格）能不能一次做完。
+    if (url.searchParams.get("stream") === "1") {
+      const rawStreamTimeout = Number(url.searchParams.get("timeout") || "");
+      const streamTimeout =
+        Number.isFinite(rawStreamTimeout) && rawStreamTimeout >= 5000
+          ? Math.min(rawStreamTimeout, 60000)
+          : undefined;
+      probe = await probeAiStream(env, kind, {
+        maxTokens,
+        prompt,
+        perModelTimeoutMs: streamTimeout,
+        models,
+      });
+    } else {
+      probe = await probeAiChain(env, kind, { maxTokens, prompt, perModelTimeoutMs, models });
+    }
   } catch (e: any) {
     probe = { kind, error: String(e?.message || e).slice(0, 300) };
   }

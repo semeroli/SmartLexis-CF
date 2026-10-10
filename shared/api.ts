@@ -930,6 +930,308 @@ export async function callModelscope(
 }
 
 // ─────────────────────────────────────────────────────────────
+// 流式调用（SSE）—— 「边生成边显示」
+//
+// 为什么要做（2026-10-10 实测）：
+//   这套免费模型现在只有约 30～45 字/秒，而 Cloudflare 免费版单请求最多撑到
+//   约 33.5 秒（实测 40.5 秒会被 CF 直接掐断、返回它自己的错误页）。两条一乘，
+//   单次调用最多只能产出 1000～1400 字 —— 而「学情分析 / 专项练习 / 作文升格」
+//   产出都在 1500 字以上，**已经顶到上限，随时会偶发失败**。
+//
+//   改成流式之后有两个好处：
+//     ① 老师不用干等 —— 字是一个一个蹦出来的，等待感基本消失；
+//     ② 请求从第一秒起就一直在传字节，不再是「上游闷头算 30 秒」，
+//        更不容易被平台的空闲判断掐断。
+//
+// ⚠️ 一个绕不开的限制：**降级链在流式里只能覆盖"开流之前"的失败**。
+//    一旦我们已经把字节发给浏览器了，就不可能再换一个模型从头吐一遍
+//    （老师会看到两篇文章接在一起）。所以：
+//      · 只有上游返回非 2xx 时，才继续试下一个模型（这部分和原来一样）；
+//      · 一旦开流，模型中途断掉就只能如实报错，让老师重试一次。
+//    这也是为什么"把最快的、最稳的模型排链首"依然是最重要的事。
+// ─────────────────────────────────────────────────────────────
+
+export interface AiStreamHandshake {
+  /** 上游的流式响应，**尚未被消费** —— 交给 pipeAiStream 转发 */
+  response: Response;
+  model: string;
+  attempts: AiAttempt[];
+}
+
+/** 一次调用最多允许下发多少字节。防止失控的流把请求拖到被平台掐断。 */
+const STREAM_SAFETY_MS = 60000;
+
+/**
+ * 和 callModelscope 用**同一条候选链、同一套超时预算**，唯一区别是 `stream: true`。
+ * 返回还没被读过的上游响应；全部候选都失败时抛 HttpError(502)。
+ *
+ * 注意：这里**不做** stripThinkingNoise —— 流式下正文是一点点来的，
+ * 中途无法判断开头那段是不是"思考过程"。剥除动作放在收尾时做（见 transformFinal）。
+ */
+export async function callModelscopeStream(
+  env: any,
+  kind: AiModelKind,
+  messages: any[],
+  opts: {
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs?: number;
+    totalBudgetMs?: number;
+  } = {}
+): Promise<AiStreamHandshake> {
+  const keys = modelscopeKeys(env);
+  if (!keys.length) {
+    throw new HttpError(500, "AI 服务未配置（缺少 MODELSCOPE_API_KEY）");
+  }
+
+  const chain = modelscopeModelChain(env, kind);
+  const timeoutMs = opts.timeoutMs ?? 60000;
+  // 流式下的"超时"含义会和同步调用不同 —— 它约束的是**整个流的持续时长**，
+  // 而不是"多久之内必须出完"。所以给得比同步宽松一点（默认 +8 秒），
+  // 否则一个正常但较慢的长文生成会被自己掐断。
+  const streamTimeoutMs = timeoutMs + 8000;
+  const budgetMs = opts.totalBudgetMs ?? 28000;
+  const startedAt = Date.now();
+  const attempts: AiAttempt[] = [];
+
+  await writeAiDiag(env, kind, "started", 0, `流式 ｜ 候选链：${chain.join(" → ")}`);
+
+  for (const model of chain) {
+    if (deadModels.has(model)) continue;
+    const cooledAt = timeoutCoolDown.get(model);
+    if (cooledAt && Date.now() - cooledAt < TIMEOUT_COOLDOWN_MS) {
+      attempts.push({ model, result: "刚超时过，暂时跳过" });
+      continue;
+    }
+    const left = budgetMs - (Date.now() - startedAt);
+    if (left <= 2500) {
+      attempts.push({ model, result: "总时间已用完，未及尝试" });
+      break;
+    }
+    const perTry = Math.min(streamTimeoutMs, left);
+    const key = keys[Math.floor(Math.random() * keys.length)];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), perTry);
+    try {
+      const res = await fetch(aiEndpoint(env, kind), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: opts.temperature ?? 0.2,
+          max_tokens: opts.maxTokens ?? 2500,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+      // ⚠️ 这里**不能** clearTimeout：定时器要陪着整个流走完，
+      //    否则上游开流之后就不受控了，可能挂着不动直到平台掐断。
+      //    真正的清理在返回的流收尾时做（见 consumeUpstream）。
+      if (!res.ok) {
+        clearTimeout(timer);
+        const note = (await res.text().catch(() => "")).slice(0, 240).replace(/\s+/g, " ");
+        attempts.push({ model, result: `HTTP ${res.status}`, note });
+        if (
+          res.status === 401 ||
+          res.status === 403 ||
+          (res.status === 400 && /no provider supported/i.test(note))
+        ) {
+          deadModels.add(model);
+        }
+        if (res.status === 401 || res.status === 403) break;
+        continue;
+      }
+
+      lastGoodModel[kind] = model;
+      // 把中止控制器挂在 response 上带出去，由转发层负责 clearTimeout
+      (res as any).__slAbortTimer = timer;
+      (res as any).__slController = controller;
+      return { response: res, model, attempts };
+    } catch (e: any) {
+      clearTimeout(timer);
+      const aborted = e?.name === "AbortError";
+      if (aborted && perTry >= streamTimeoutMs) timeoutCoolDown.set(model, Date.now());
+      attempts.push({
+        model,
+        result: aborted ? `超时(${perTry}ms)` : "请求异常",
+        note: String(e?.message || e).slice(0, 160),
+      });
+    }
+  }
+
+  const tried = attempts.filter((a) => a.result !== "总时间已用完，未及尝试");
+  const detail = tried.length
+    ? tried.map((a) => `${a.model} → ${a.result}`).join("；")
+    : `候选模型都已确认不可用（共 ${chain.length} 个，多为平台下架或本账号无权限）` +
+      (attempts.length ? "，且剩余模型来不及尝试" : "");
+
+  console.error(
+    `[AI失败·流式] kind=${kind} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s | ` +
+      attempts.map((a) => `${a.model}→${a.result}${a.note ? "「" + a.note.slice(0, 90) + "」" : ""}`).join(" || ")
+  );
+  await writeAiDiag(
+    env,
+    kind,
+    "failed",
+    Date.now() - startedAt,
+    attempts.map((a) => `${a.model}→${a.result}`).join(" | ") || "全部候选被跳过"
+  );
+  throw new HttpError(502, `AI 服务暂不可用（${detail}）`);
+}
+
+const SSE_ENCODER = new TextEncoder();
+
+/** 把一个小对象包成一帧 SSE，浏览器侧按 `data: {...}` 逐行解析。 */
+export function sseFrame(obj: Record<string, any>): Uint8Array {
+  return SSE_ENCODER.encode("data: " + JSON.stringify(obj) + "\n\n");
+}
+
+/**
+ * 需要的响应头。
+ *   · `text/event-stream`：告诉浏览器这是流，fetch 的 body 可以边收边读；
+ *   · `no-store` + `X-Accel-Buffering: no`：避免中间层攒够一大块才转发，
+ *     那样"边生成边显示"就退化成"等半天一次性出现"。
+ */
+export function sseHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    ...extra,
+  };
+}
+
+/**
+ * 前端用 `?stream=1` 表示「请用流式返回」。
+ *
+ * 为什么不把接口直接改成只支持流式：同一份代码里留着非流式那条路，
+ * 一是测试脚本、诊断工具还在按 JSON 用；二是万一流式在某个环境里被中间层
+ * 攒着不转发，我们能随时把前端换回 `?stream=0` 立刻恢复，不用回滚部署。
+ */
+export function wantsStream(request: Request): boolean {
+  try {
+    return new URL(request.url).searchParams.get("stream") === "1";
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * 把上游的流式响应转成我们自己的小信封，边收边下发。
+ *
+ * 下发的事件（每帧都是 `{type: ...}`）：
+ *   meta   —— 一开始就发，带模型名。老师能知道这次是谁在写。
+ *   delta  —— 增量正文。前端把它累加起来实时显示。
+ *   done   —— 流正常结束。带 `onComplete` 的返回值（落库结果、解析好的 JSON 等）。
+ *   error  —— 出错了。带一句人话，前端直接显示。
+ *
+ * ⚠️ 无论成功失败都必须把流关掉：中途抛异常又不 close，浏览器会一直等，
+ *    表现就是"卡住不动"，比明确报错更糟。
+ */
+export function pipeAiStream(
+  upstream: Response,
+  model: string,
+  opts: {
+    /** 流正常收尾后调用；返回值随 done 事件下发。抛错 ⇒ 变成 error 事件。 */
+    onComplete: (full: string, finishReason: string) => Promise<Record<string, any>> | Record<string, any>;
+    /** 收尾时对完整正文做一次加工（例如剥掉思考过程）；同时用于 done 载荷里的 text */
+    transformFinal?: (full: string) => string;
+    /** 只想下发增量文本时用；默认直接下发 delta.content */
+    extraHeaders?: Record<string, string>;
+  }
+): Response {
+  const timer = (upstream as any).__slAbortTimer;
+  const abortController = (upstream as any).__slController;
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let full = "";
+      let finishReason = "";
+      let closed = false;
+      const close = () => { if (!closed) { closed = true; try { controller.close(); } catch (_) {} } };
+      const send = (obj: Record<string, any>) => {
+        if (closed) return;
+        try { controller.enqueue(sseFrame(obj)); } catch (_) { closed = true; }
+      };
+
+      const hardStop = setTimeout(() => {
+        try { abortController?.abort(); } catch (_) {}
+        send({ type: "error", message: "生成时间过长已中止，请重试一次" });
+        close();
+      }, STREAM_SAFETY_MS);
+
+      try {
+        send({ type: "meta", model });
+
+        const reader = upstream.body?.getReader();
+        if (!reader) throw new Error("上游没有返回流式内容");
+
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+
+          // SSE 以空行分帧；这里按行处理，把不完整的最后一段留在 buf 里。
+          // ⚠️ 一定要留着 —— 一个 JSON 帧可能被 TCP 切成两段，
+          //    直接 JSON.parse 会失败，而且丢的是正文。
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).replace(/\r$/, "");
+            buf = buf.slice(nl + 1);
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === "[DONE]") continue;
+            let obj: any = null;
+            try { obj = JSON.parse(payload); } catch (_) { continue; }
+            const choice = obj?.choices?.[0];
+            if (choice?.finish_reason) finishReason = String(choice.finish_reason);
+            // 同时兼容 delta（流式）与 message（个别平台流里也塞 message）
+            const piece = String(choice?.delta?.content ?? choice?.message?.content ?? "");
+            if (piece) {
+              full += piece;
+              send({ type: "delta", text: piece });
+            }
+          }
+        }
+
+        // 正常结束
+        if (!full.trim()) {
+          // 上游 200 但一个字都没吐（实测遇到过）。这时**不要**调 onComplete ——
+          // 否则会记一次"成功"的用量，还把空结果落库。
+          console.error(`pipeAiStream: 上游 ${model} 返回空正文`);
+          send({ type: "error", message: "AI 没有返回任何内容，请重试一次" });
+        } else {
+          const finalText = opts.transformFinal ? opts.transformFinal(full) : full;
+          const payload = await opts.onComplete(full, finishReason);
+          send({ type: "done", text: finalText, model, finishReason, ...payload });
+        }
+      } catch (e: any) {
+        // 调用方在 onComplete 里主动抛 HttpError(502, "……") 时，文案本来就是给老师看的，
+        // 直接原样下发；只有意料之外的异常才套上"中途中断"的壳。
+        const isExpected = e instanceof HttpError;
+        const msg = isExpected
+          ? e.message
+          : "生成中途中断（" + String(e?.message || e).slice(0, 120) + "），请重试一次";
+        console.error("pipeAiStream error:", String(e?.message || e));
+        send({ type: "error", message: msg });
+      } finally {
+        clearTimeout(hardStop);
+        if (timer) clearTimeout(timer);
+        close();
+      }
+    },
+  });
+
+  return new Response(body, { status: 200, headers: sseHeaders(opts.extraHeaders) });
+}
+
+
+// ─────────────────────────────────────────────────────────────
 // 模型体检（公开自检用，配 /api/version?probe=1）
 //
 // 为什么需要它：
@@ -1091,4 +1393,156 @@ export async function claimAiProbe(
   } catch (_) {
     return { ok: true, retryAfterSec: 0 };
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 流式体检（/api/version?probe=1&stream=1）
+//
+// 它要回答一个**用猜的会出事**的问题：改了流式之后，单次请求到底还能撑多久？
+//
+//   已知（2026-10-09 实测）：普通一次性请求里，33.5 秒能正常返回，
+//     40.5 秒被 Cloudflare 掐断、返回它自己的 502 HTML。
+//   不确定：流式响应**全程一直在传字节**，那个上限还适不适用？
+//     这决定了「作文升格」这种要吐 2500 字的接口能不能一次做完
+//     （按 30～45 字/秒算需要 50 秒以上）。
+//
+// 所以这里故意**不设总预算**，让它跑到平台自己喊停 —— 我们要的就是那条线的位置。
+// 失败时客户端拿到的会是平台自己的 HTML 而不是 JSON，这本身就是答案。
+// ─────────────────────────────────────────────────────────────
+
+export interface AiProbeStreamItem {
+  model: string;
+  status: string;
+  /** 从发出请求到收到**第一个正文增量**的毫秒数 —— 也就是"老师多久能看到字" */
+  firstMs?: number;
+  ms: number;
+  textChars?: number;
+  finishReason?: string;
+  note?: string;
+}
+
+export async function probeAiStream(
+  env: any,
+  kind: AiModelKind,
+  opts: {
+    perModelTimeoutMs?: number;
+    maxTokens?: number;
+    prompt?: string;
+    models?: string[] | string;
+  } = {}
+): Promise<{ kind: string; streaming: true; perModelTimeoutMs: number; maxTokens: number; results: AiProbeStreamItem[] }> {
+  const keys = modelscopeKeys(env);
+  const named = typeof opts.models === "string"
+    ? opts.models.split(",").map((s) => s.trim()).filter(Boolean)
+    : Array.isArray(opts.models) ? opts.models.map((s) => String(s).trim()).filter(Boolean) : [];
+  const chain = named.length ? [...new Set(named)].slice(0, 6) : modelscopeModelChain(env, kind).slice(0, 4);
+
+  // 默认给 45 秒：足够跑出"平台到底在哪一秒掐断"这个结论
+  const perModelTimeoutMs = Math.min(Math.max(opts.perModelTimeoutMs ?? 45000, 5000), 60000);
+  const maxTokens = Math.min(Math.max(opts.maxTokens ?? 2500, 8), 4000);
+  const askText = String(
+    opts.prompt ||
+      (kind === "vision" ? "这张图是什么颜色？只回答颜色名。" : "请只回复两个字：正常")
+  ).slice(0, 500);
+
+  // 视觉必须真的带图 —— 否则"视觉流式体检"只是在拿文本考一个视觉模型，
+  // 测出来的时间跟「认作文照片」没有关系，等于白测。
+  const messages =
+    kind === "vision"
+      ? [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: askText },
+              { type: "image_url", image_url: { url: PROBE_TINY_PNG } },
+            ],
+          },
+        ]
+      : [{ role: "user", content: askText }];
+
+  const results: AiProbeStreamItem[] = [];
+
+  for (const model of chain) {
+    if (!keys.length) {
+      results.push({ model, status: "未配置 KEY", ms: 0, note: "MODELSCOPE_API_KEY 为空" });
+      break;
+    }
+    const key = keys[0];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), perModelTimeoutMs);
+    const t0 = Date.now();
+    try {
+      const res = await fetch(aiEndpoint(env, kind), {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.2,
+          max_tokens: maxTokens,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        clearTimeout(timer);
+        const note = (await res.text().catch(() => "")).slice(0, 300).replace(/\s+/g, " ");
+        results.push({ model, status: `HTTP ${res.status}`, ms: Date.now() - t0, note });
+        if (res.status === 401 || res.status === 403) break;
+        continue;
+      }
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let chars = 0;
+      let firstMs: number | undefined;
+      let finishReason = "";
+      while (reader) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).replace(/\r$/, "");
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          let obj: any = null;
+          try { obj = JSON.parse(payload); } catch (_) { continue; }
+          const choice = obj?.choices?.[0];
+          if (choice?.finish_reason) finishReason = String(choice.finish_reason);
+          const piece = String(choice?.delta?.content ?? "");
+          if (piece) {
+            if (firstMs === undefined) firstMs = Date.now() - t0;
+            chars += piece.length;
+          }
+        }
+      }
+      clearTimeout(timer);
+      results.push({
+        model,
+        status: chars ? "✅ 流式 200" : "⚠️ 流式 200 但正文为空",
+        firstMs,
+        ms: Date.now() - t0,
+        textChars: chars,
+        finishReason,
+        note: firstMs !== undefined ? `首字 ${firstMs}ms，全程 ${Date.now() - t0}ms` : "",
+      });
+      if (chars) break; // 有一个能用的就够了
+    } catch (e: any) {
+      clearTimeout(timer);
+      const aborted = e?.name === "AbortError";
+      results.push({
+        model,
+        status: aborted ? `超时(${perModelTimeoutMs}ms)` : "请求异常",
+        ms: Date.now() - t0,
+        note: String(e?.message || e).slice(0, 200),
+      });
+    }
+  }
+
+  return { kind, streaming: true, perModelTimeoutMs, maxTokens, results };
 }

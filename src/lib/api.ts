@@ -8,6 +8,8 @@
 //   · 身份只认服务端返回的 /api/auth/me，不信 localStorage 里的副本。
 // ─────────────────────────────────────────────────────────────
 
+import { createSseDecoder, type SseEvent } from "./sse";
+
 const TOKEN_KEY = "lexis_token";
 const USER_KEY = "lexis_user";
 
@@ -99,3 +101,106 @@ export async function errorMessage(res: Response, fallback: string): Promise<str
     return fallback;
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// 流式请求（「边生成边显示」）
+//
+// 服务端把 AI 的增量包成 `data: {"type":...}` 一帧帧发过来，这里负责读、解、回调。
+// 约定四种帧：meta（模型名）/ delta（增量正文）/ done（收尾载荷）/ error（一句人话）。
+//
+// ⚠️ 两个必须处理的现实情况：
+//   ① **错误可能出现在"开流之后"**（模型说到一半断了）。这时 HTTP 状态码已经是 200、
+//      响应头也已经发出去了，改不了 —— 只能靠 error 帧告诉我们。所以不能只看 res.ok。
+//   ② **中间层可能把流换掉**。遇到平台自己吐的错误页时，Content-Type 不是
+//      text/event-stream，这时要明确报错，而不是当成"流里没内容"静默结束。
+// ─────────────────────────────────────────────────────────────
+
+export interface AiStreamHandlers {
+  /** 已连上模型，附模型名（老师能知道这次是谁在写） */
+  onStart?: (model: string) => void;
+  /** 每次拿到增量就回调，参数是**累计至今**的完整正文 */
+  onDelta?: (fullText: string) => void;
+  /** 正常结束。payload 是 done 帧的全部字段（含 text / result 等） */
+  onDone?: (payload: any) => void;
+}
+
+export async function apiStream(
+  input: string,
+  init: RequestInit,
+  handlers: AiStreamHandlers = {}
+): Promise<void> {
+  const res = await apiFetch(input, init); // 401 会在这里直接抛
+
+  if (!res.ok) {
+    // 走到这里说明失败发生在"还没有开始输出"之前（配额、参数、模型全挂），
+    // 此时服务端返回的是普通 JSON，能拿到准确文案。
+    throw new ApiError(res.status, await errorMessage(res, `请求失败 (${res.status})`));
+  }
+
+  const contentType = res.headers.get("Content-Type") || "";
+  if (!contentType.includes("text/event-stream")) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(
+      res.status,
+      text.trim().startsWith("<")
+        ? `请求被服务器中途中断（HTTP ${res.status}）—— 请稍等一会儿重试一次`
+        : "服务器没有返回流式内容，请稍后重试"
+    );
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new ApiError(500, "当前浏览器不支持流式读取");
+
+  const sse = createSseDecoder();
+  let full = "";
+  let finished = false;
+  let streamError: string | null = null;
+  let lastDone: any = null;
+
+  const handle = (events: SseEvent[]) => {
+    for (const ev of events) {
+      if (ev.type === "meta") {
+        handlers.onStart?.(String(ev.model || ""));
+      } else if (ev.type === "delta") {
+        full += String(ev.text || "");
+        handlers.onDelta?.(full);
+      } else if (ev.type === "done") {
+        finished = true;
+        lastDone = ev;
+      } else if (ev.type === "error") {
+        streamError = String(ev.message || "生成失败，请重试一次");
+      }
+    }
+  };
+
+  const bailIfError = () => {
+    if (streamError) {
+      // 停止继续读 —— 后面的内容已经没有意义了
+      try { reader.cancel(); } catch (_) {}
+      throw new ApiError(502, streamError);
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      handle(sse.push(value));
+      bailIfError();
+    }
+    handle(sse.end());
+    bailIfError();
+  } catch (e: any) {
+    if (e instanceof ApiError) throw e;
+    // 读流本身出错（断网、连接被掐断）
+    throw new ApiError(502, "连接中断，生成未完成，请重试一次");
+  }
+
+  if (!finished) {
+    // 流结束了但没有 done 帧：服务端在收尾前挂掉了
+    throw new ApiError(502, "生成被中断，结果可能不完整，请重试一次");
+  }
+
+  handlers.onDone?.(lastDone);
+}
+
