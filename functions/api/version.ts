@@ -24,7 +24,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-key-fingerprint";
+const BUILD = "2026-10-10-probe-verbose";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -79,6 +79,12 @@ export async function onRequestGet(context: any) {
 
   const kind: AiModelKind = url.searchParams.get("kind") === "vision" ? "vision" : "text";
 
+  // 可选：换个提示词和更长的长度，看看模型在**真实长度**下返回什么形状
+  // （默认那 32 字只够它说半句"思考过程"，看不出最终答案长什么样）
+  const rawTokens = Number(url.searchParams.get("tokens") || "");
+  const maxTokens = Number.isFinite(rawTokens) && rawTokens > 0 ? rawTokens : undefined;
+  const prompt = url.searchParams.get("say") || undefined;
+
   const gate = await claimAiProbe(env, 30000);
   if (!gate.ok) {
     return jsonResponse(
@@ -98,7 +104,7 @@ export async function onRequestGet(context: any) {
 
   let probe: any;
   try {
-    probe = await probeAiChain(env, kind);
+    probe = await probeAiChain(env, kind, { maxTokens, prompt });
   } catch (e: any) {
     probe = { kind, error: String(e?.message || e).slice(0, 300) };
   }

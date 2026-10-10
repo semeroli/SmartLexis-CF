@@ -755,7 +755,16 @@ export async function callModelscope(
       }
 
       lastGoodModel[kind] = model;
-      await writeAiDiag(env, kind, "succeeded", Date.now() - startedAt, `使用 ${model}`);
+      // 记录里带上「正文开头」—— 一来能看出模型有没有把"思考过程"混进正文
+      // （2026-10-10 实测 Intern-S2-Preview 会把 `Thinking Process:` 写进 content），
+      // 二来出问题时有据可查，不用再让老师截图。
+      await writeAiDiag(
+        env,
+        kind,
+        "succeeded",
+        Date.now() - startedAt,
+        `使用 ${model} ｜ 正文 ${content.length} 字 ｜ 开头：${content.slice(0, 140).replace(/\s+/g, " ")}`
+      );
       return { content, model, attempts };
     } catch (e: any) {
       clearTimeout(timer);
@@ -830,19 +839,28 @@ export interface AiProbeResult {
   endpoint: string;
   chain: string[];
   perModelTimeoutMs: number;
+  maxTokens: number;
   results: AiProbeItem[];
 }
 
 export async function probeAiChain(
   env: any,
   kind: AiModelKind,
-  opts: { perModelTimeoutMs?: number; totalBudgetMs?: number } = {}
+  opts: {
+    perModelTimeoutMs?: number;
+    totalBudgetMs?: number;
+    maxTokens?: number;
+    prompt?: string;
+  } = {}
 ): Promise<AiProbeResult> {
   const keys = modelscopeKeys(env);
   const chain = modelscopeModelChain(env, kind);
   const endpoint = aiEndpoint(env, kind);
   const perModelTimeoutMs = opts.perModelTimeoutMs ?? 8000;
   const budgetMs = opts.totalBudgetMs ?? 26000;
+  const maxTokens = Math.min(Math.max(opts.maxTokens ?? 32, 8), 2000);
+  const defaultPrompt = kind === "vision" ? "这张图是什么颜色？只回答颜色名。" : "请只回复两个字：正常";
+  const askText = String(opts.prompt || defaultPrompt).slice(0, 500);
   const startedAt = Date.now();
   const results: AiProbeItem[] = [];
 
@@ -852,12 +870,12 @@ export async function probeAiChain(
           {
             role: "user",
             content: [
-              { type: "text", text: "这张图是什么颜色？只回答颜色名。" },
+              { type: "text", text: askText },
               { type: "image_url", image_url: { url: PROBE_TINY_PNG } },
             ],
           },
         ]
-      : [{ role: "user", content: "请只回复两个字：正常" }];
+      : [{ role: "user", content: askText }];
 
   for (const model of chain) {
     if (!keys.length) {
@@ -876,7 +894,7 @@ export async function probeAiChain(
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { Authorization: `Bearer ${keys[0]}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, temperature: 0, max_tokens: 32, stream: false }),
+        body: JSON.stringify({ model, messages, temperature: 0, max_tokens: maxTokens, stream: false }),
         signal: controller.signal,
       });
       clearTimeout(timer);
@@ -892,7 +910,8 @@ export async function probeAiChain(
         status: res.ok ? "✅ HTTP 200" : `❌ HTTP ${res.status}`,
         ms: Date.now() - t0,
         textChars: content.length,
-        note: (content || raw).slice(0, 200).replace(/\s+/g, " "),
+        // 限流时把整段原文留着（很短），正常时给正文片段
+        note: (res.ok ? content || raw : raw).slice(0, 400).replace(/\s+/g, " "),
       });
     } catch (e: any) {
       clearTimeout(timer);
@@ -906,7 +925,7 @@ export async function probeAiChain(
     }
   }
 
-  return { kind, endpoint, chain, perModelTimeoutMs, results };
+  return { kind, endpoint, chain, perModelTimeoutMs, maxTokens, results };
 }
 
 /**
