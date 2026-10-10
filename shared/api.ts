@@ -1578,17 +1578,28 @@ export interface AiHeartbeatResult {
  * 造一个心跳流响应。**不调模型、不花额度**，纯粹用来量平台对流式响应的时限。
  * 同时导出成可离线验证的形式：测试里直接读这个 Response 的 body 就能断言。
  */
-export function probeHeartbeat(opts: { seconds?: number; intervalMs?: number } = {}): Response {
+export function probeHeartbeat(opts: { seconds?: number; intervalMs?: number; buffered?: boolean } = {}): Response {
   const seconds = Math.min(Math.max(Math.round(opts.seconds ?? 60), 5), 120);
   const intervalMs = Math.min(Math.max(Math.round(opts.intervalMs ?? 1000), 200), 5000);
+  const buffered = !!opts.buffered;
   const t0 = Date.now();
   let timer: any = null;
 
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
       let closed = false;
+      const queue: Uint8Array[] = [];
       const send = (obj: Record<string, any>) => {
         if (closed) return;
+        // buffered 模式：先不发，攒到最后一次性吐出去。
+        // 它不是"另一种心跳"，而是**对照组** —— 同一条代码路径、同样的时长，
+        // 唯一差别就是"边跑边发"还是"跑完一次性发"。
+        // 这样量出来的差异只可能来自"有没有在传字节"这一个变量，
+        // 而不是拿昨天测的旧数字跟今天比（平台中途改了规矩就没人知道了）。
+        if (buffered) {
+          queue.push(sseFrame(obj));
+          return;
+        }
         try {
           controller.enqueue(sseFrame(obj));
         } catch (_) {
@@ -1603,6 +1614,15 @@ export function probeHeartbeat(opts: { seconds?: number; intervalMs?: number } =
           clearInterval(timer);
           timer = null;
         }
+        if (buffered) {
+          for (const c of queue) {
+            try {
+              controller.enqueue(c);
+            } catch (_) {
+              break;
+            }
+          }
+        }
         try {
           controller.close();
         } catch (_) {}
@@ -1612,8 +1632,11 @@ export function probeHeartbeat(opts: { seconds?: number; intervalMs?: number } =
         type: "meta",
         seconds,
         intervalMs,
+        buffered,
         startedAt: new Date(t0).toISOString(),
-        note: "心跳探针：只发字节，不调模型，不花额度",
+        note: buffered
+          ? "心跳探针（缓冲对照组）：过程不发，跑完一次性吐出去"
+          : "心跳探针：只发字节，不调模型，不花额度",
       });
 
       let n = 0;

@@ -30,11 +30,14 @@ import {
 //                        流式响应活多久」（&seconds=120 可调，上限 120 秒）。
 //                        ⚠️ 它必须存在，因为上面两个都是「跑完再一次性返回 JSON」——
 //                        那样的响应自己也受同一个上限约束，量不出天花板本身。
+//     加 &buffer=1      对照组：同一条代码路径、同样的时长，但过程一个字节都不发、
+//                        跑完一次性吐出去。用来证明「活得更久」是"一直在传字节"带来的，
+//                        而不是平台恰好变宽松了（那样结论就站不住）。
 //   前两种体检有 30 秒冷却（真花额度）；心跳不花额度，所以不设冷却，可以连测。
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-heartbeat";
+const BUILD = "2026-10-10-heartbeat-ab";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -95,6 +98,9 @@ export async function onRequestGet(context: any) {
     const rawSec = Number(url.searchParams.get("seconds") || "");
     return probeHeartbeat({
       seconds: Number.isFinite(rawSec) && rawSec > 0 ? rawSec : undefined,
+      // &buffer=1 → 对照组：过程一个字节都不发，跑完一次性吐出去。
+      // 用来证明"活得更久"确实是「一直在传字节」带来的，不是平台恰好变宽松了。
+      buffered: url.searchParams.get("buffer") === "1",
     });
   }
 
