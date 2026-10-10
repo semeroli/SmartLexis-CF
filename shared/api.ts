@@ -1190,6 +1190,16 @@ export function pipeAiStream(
      * 属于"有内容"）留足余量；真的一个字都没有 45 秒，那就是死了。
      */
     stallMs?: number;
+    /**
+     * 「行车记录仪」：把这次的**收尾结果**也写进 ai_diag。
+     *
+     * 为什么必须给：流式改造前，成功/失败都会写一条记录；改造后
+     * callModelscopeStream 只在**全链失败**时才写，成功就直接返回了 ——
+     * 于是记录永远停在 `started`。而"只有 started、没有收尾"原本正是
+     * 「被平台半路掐断」的判据，这下子成功和掐断长得一模一样，
+     * 那个唯一能在线上定位故障的工具就废了。（这是流式改造自己引入的回归。）
+     */
+    diag?: { env: any; kind: string };
   }
 ): Response {
   const timer = (upstream as any).__slAbortTimer;
@@ -1203,17 +1213,40 @@ export function pipeAiStream(
       let reasoningChars = 0;
       let lastProgressAt = 0;
       let closed = false;
+      // 收尾时要写进行车记录仪的一句话：空字符串 = 正常收尾
+      let failureNote = "";
+      let clientGone = false;
       const close = () => { if (!closed) { closed = true; try { controller.close(); } catch (_) {} } };
       const send = (obj: Record<string, any>) => {
         if (closed) return;
-        try { controller.enqueue(sseFrame(obj)); } catch (_) { closed = true; }
+        try {
+          controller.enqueue(sseFrame(obj));
+        } catch (_) {
+          closed = true;
+          // 多半是浏览器把标签页关了 —— 记一笔，
+          // 免得事后看行车记录仪以为模型没出完
+          clientGone = true;
+        }
+      };
+
+      // ⚠️ 中止时必须**同时**把读取循环叫停。
+      //    只 abort + close 是不够的：abort 只对"我们自己做的那次 fetch"生效，
+      //    万一上游那条连接不理会 signal（或者上游根本挂住不返回），
+      //    `reader.read()` 就永远不返回 ⇒ 下面的 finally 永远不执行 ⇒
+      //    行车记录仪永远收不了尾、定时器也不清理。实测踩过这个坑。
+      let stopRead: () => void = () => {};
+      const stopPromise = new Promise<void>((r) => { stopRead = r; });
+      const abortNow = (note: string, userMessage: string) => {
+        failureNote = note;
+        try { abortController?.abort(); } catch (_) {}
+        send({ type: "error", message: userMessage });
+        close();
+        stopRead();
       };
 
       const safetyMs = opts.safetyMs && opts.safetyMs > 0 ? opts.safetyMs : STREAM_SAFETY_MS;
       const hardStop = setTimeout(() => {
-        try { abortController?.abort(); } catch (_) {}
-        send({ type: "error", message: "生成时间过长已中止，请重试一次" });
-        close();
+        abortNow(`超过安全上限 ${safetyMs}ms 中止`, "生成时间过长已中止，请重试一次");
       }, safetyMs);
 
       // 停滞检测：只看"距上次有新内容过了多久"，不看总时长。
@@ -1224,13 +1257,11 @@ export function pipeAiStream(
       const stallTimer = setInterval(() => {
         if (closed) return;
         if (Date.now() - lastActivityAt < stallMs) return;
-        try { abortController?.abort(); } catch (_) {}
         clearInterval(stallTimer);
-        send({
-          type: "error",
-          message: `AI 已 ${Math.round(stallMs / 1000)} 秒没有任何新内容，已中止，请重试一次`,
-        });
-        close();
+        abortNow(
+          `停滞 ${Math.round(stallMs / 1000)} 秒没有任何新内容`,
+          `AI 已 ${Math.round(stallMs / 1000)} 秒没有任何新内容，已中止，请重试一次`
+        );
       }, 2000);
 
       try {
@@ -1243,8 +1274,14 @@ export function pipeAiStream(
         let buf = "";
 
         while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+          // 和"中止信号"赛跑：谁先到算谁的。
+          // 这样即使上游那条连接赖着不返回，中止也能真正结束这个循环。
+          const step: any = await Promise.race([
+            reader.read(),
+            stopPromise.then(() => ({ done: true, value: undefined, stopped: true })),
+          ]);
+          if (step.done) break;
+          const value: Uint8Array = step.value;
           buf += decoder.decode(value, { stream: true });
 
           // SSE 以空行分帧；这里按行处理，把不完整的最后一段留在 buf 里。
@@ -1292,10 +1329,16 @@ export function pipeAiStream(
         }
 
         // 正常结束
-        if (!full.trim()) {
+        // ⚠️ 先判"是不是被我们中止的"：中止时正文可能已经写了大半截，
+        //    如果漏了这一条，就会把一个半截结果当成完成品发 done ——
+        //    前端会把残缺报告当正式结果落库，比直接报错更糟。
+        if (failureNote) {
+          // 错误帧已经发过了，这里什么都不做
+        } else if (!full.trim()) {
           // 上游 200 但一个字都没吐（实测遇到过）。这时**不要**调 onComplete ——
           // 否则会记一次"成功"的用量，还把空结果落库。
           console.error(`pipeAiStream: 上游 ${model} 返回空正文`);
+          failureNote = "上游 200 但正文为空";
           send({ type: "error", message: "AI 没有返回任何内容，请重试一次" });
         } else {
           const finalText = opts.transformFinal ? opts.transformFinal(full) : full;
@@ -1319,12 +1362,26 @@ export function pipeAiStream(
           ? e.message
           : "生成中途中断（" + String(e?.message || e).slice(0, 120) + "），请重试一次";
         console.error("pipeAiStream error:", String(e?.message || e));
+        failureNote = (failureNote ? failureNote + " ｜ " : "") + String(e?.message || e).slice(0, 120);
         send({ type: "error", message: msg });
       } finally {
         clearTimeout(hardStop);
         clearInterval(stallTimer);
         if (timer) clearTimeout(timer);
         close();
+
+        // 行车记录仪收尾。⚠️ 这条**必须**有：只有 started、没有收尾，
+        // 原本就是「被平台半路掐断」的判据；流式下如果不写，成功和掐断就分不清了。
+        if (opts.diag) {
+          const ms = Date.now() - t0Stream;
+          const phase = clientGone ? "client-gone" : failureNote ? "failed" : "succeeded";
+          const detail =
+            `流式收尾 ｜ ${model} ｜ 正文 ${full.length} 字` +
+            (reasoningChars ? `（另思考 ${reasoningChars} 字）` : "") +
+            (finishReason ? ` ｜ finish=${finishReason}` : "") +
+            (failureNote ? ` ｜ ${failureNote}` : "");
+          await writeAiDiag(opts.diag.env, opts.diag.kind, phase, ms, detail).catch(() => {});
+        }
       }
     },
   });

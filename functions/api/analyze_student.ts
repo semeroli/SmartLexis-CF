@@ -76,7 +76,7 @@ export async function onRequestPost(context: any) {
     const AI_OPTS = { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 60000 };
     // 这份报告约 1000～2500 字。实测出字速度约 90～110 字/秒，加上开头思考几秒，
     // 满打满算 30 秒上下；70 秒的安全上限留足余量（平台实测能撑 120 秒以上）。
-    const STREAM_OPTS = { safetyMs: 70000, progressFrames: true };
+    const STREAM_OPTS = { safetyMs: 70000, progressFrames: true, diag: { env, kind: "text" } };
 
     // ── 流式：老师要边生成边看 ──────────────────────────────
     // 学情分析是一份 1000 字上下的长报告，等它一次性吐完要 20～30 秒。

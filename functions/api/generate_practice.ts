@@ -160,7 +160,7 @@ export async function onRequestPost(context: any) {
     // 握手 20 秒、总预算 60 秒（缘由见 analyze_essay.ts 的同一处注释）
     const AI_OPTS = { temperature: 0.7, maxTokens: 3000, timeoutMs: 20000, totalBudgetMs: 60000 };
     // 题目＋选项＋解析，可能要 3000 字，给 80 秒安全上限。
-    const STREAM_OPTS = { safetyMs: 80000, progressFrames: true };
+    const STREAM_OPTS = { safetyMs: 80000, progressFrames: true, diag: { env, kind: "text" } };
 
     // ── 流式 ────────────────────────────────────────────────
     // 这个接口产出的是 JSON（题目＋选项＋解析），正文没法直接看，

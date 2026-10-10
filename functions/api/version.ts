@@ -40,7 +40,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-11-budget60";
+const BUILD = "2026-10-11-diag";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -190,6 +190,7 @@ export async function onRequestGet(context: any) {
           maxTokens: liveTokens,
         }),
         safetyMs: liveBudget + 5000,
+        diag: { env, kind },
         // 打开"思考进度"帧 —— 长文生成时推理模型会先思考很久才吐正文字，
         // 这段空窗必须让客户端看得出来，否则就变成"转圈 60 秒"。
         progressFrames: true,

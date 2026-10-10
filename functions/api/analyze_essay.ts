@@ -160,7 +160,7 @@ export async function onRequestPost(context: any) {
     //    只给 30 秒会一次全链失败；60 秒够每个候选模型各被握一次（典型 5～8 秒）。
     const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 60000 };
     // 这个接口出的是短 JSON（几百字），45 秒的安全上限绰绰有余。
-    const STREAM_OPTS = { safetyMs: 45000, progressFrames: true };
+    const STREAM_OPTS = { safetyMs: 45000, progressFrames: true, diag: { env, kind: "text" } };
 
     /**
      * 从模型回答里把 JSON「抠」出来、校验、落库，最后拼出前端要的记录。
