@@ -90,23 +90,33 @@ function chunkForSpeech(text: string, maxLen = 110): string[] {
 }
 
 /**
- * 挑一个中文语音。
- * **必须优先「本地语音」(localService === true)**：微软的慧慧/康康/瑶瑶是系统自带的，
- * 离线可用；叫「Google 普通话」的那个是联网语音，国内网络下会静默失败。
+ * 把所有中文语音**按"最可能能用"排序**（第一个最优），而不是只挑一个。
+ *
+ * 为什么必须给一列、不能只挑一个：老师这边点「朗读范文」报的是 `synthesis-failed` ——
+ * 挑中的偏偏是"本机看起来最正常"的那个（Microsoft Huihui）。而 Chrome 只要
+ * **显式指定的那个语音引擎起不来**，就立刻回 `synthesis-failed`（跟网络无关，是已知行为）。
+ * 也就是说"只挑一个 = 挑错就整条路堵死"，必须留出"换一个再试"的余地。
+ *
+ * 排序依据：
+ *   ① `localService === true` 优先 —— 本地语音离线可用；「Google 普通话」是联网语音，
+ *      国内网络下不报错也不出声（静默失败），直接压到最后；
+ *   ② 名字是微软/苹果那批经典中文语音的再优先；
+ *   ③ 其余按原顺序兜底。
+ * 注意：`localService` / `default` 这两个标志本身并不可靠，所以这里**只拿来排序、不当判据**。
  */
-function pickChineseVoice(): SpeechSynthesisVoice | null {
+function rankChineseVoices(): SpeechSynthesisVoice[] {
   const ss = typeof window !== 'undefined' ? window.speechSynthesis : null;
-  if (!ss) return null;
+  if (!ss) return [];
   const all = ss.getVoices() || [];
   const zh = all.filter(v => /^zh\b|^zh-/i.test(v.lang || '') || /中文|普通话|国语|汉语/i.test(v.name || ''));
-  if (!zh.length) return null;
-  const local = zh.filter(v => v.localService);
-  const pool = local.length ? local : zh;
-  return (
-    pool.find(v => /Huihui|Kangkang|Yaoyao|Xiaoxiao|Xiaoyi|Yunxi|Yunyang|Hanhan/i.test(v.name || '')) ||
-    pool.find(v => !/Google/i.test(v.name || '')) ||
-    pool[0]
-  );
+  const score = (v: SpeechSynthesisVoice) => {
+    let s = 0;
+    if (v.localService) s += 100;
+    if (/Huihui|Kangkang|Yaoyao|Xiaoxiao|Xiaoyi|Yunxi|Yunyang|Hanhan/i.test(v.name || '')) s += 50;
+    if (/Google/i.test(v.name || '')) s -= 500;
+    return s;
+  };
+  return zh.slice().sort((a, b) => score(b) - score(a));
 }
 
 /** getVoices() 首次调用常常返回空数组（列表还没加载完），要等 voiceschanged 事件。 */
@@ -133,7 +143,7 @@ function waitForVoices(timeoutMs = 1500): Promise<SpeechSynthesisVoice[]> {
 function speechErrorMessage(code: string): string {
   const map: Record<string, string> = {
     'not-allowed': '浏览器没允许发声，请再点一次「朗读范文」',
-    'synthesis-failed': '本机语音引擎启动失败（多半是选到了需要联网的语音）',
+    'synthesis-failed': '本机语音引擎起不来',
     'audio-busy': '音频设备被占用，请先关掉其他正在播放声音的页面',
     'audio-hardware': '没检测到可用的音箱或耳机',
     'network': '这条语音需要联网，但当前网络不可用',
@@ -1265,11 +1275,14 @@ export default function App() {
   };
 
   /**
-   * 本机朗读（主力方案）。三处关键点，逐条都是实测踩出来的：
-   *   ① 显式挑**本地**中文语音 —— 不指定 voice 时 Chrome 可能选中「Google 普通话」，
-   *      那是联网语音，国内网络下不报错也不出声（静默失败）；
+   * 本机朗读（主力方案）。逐条都是实测踩出来的：
+   *   ① **不能只认一个语音**：显式给 utterance.voice 赋一个"引擎其实起不来"的语音，
+   *      Chrome 会直接回 `synthesis-failed`（老师遇到的就是这个）。所以要准备**一列候选
+   *      语音依次重试**，最后一道防线是"干脆不指定语音、只给 lang"，让浏览器用系统默认；
    *   ② cancel() 之后要让出一次事件循环再 speak()，否则这次朗读会被整个吞掉；
-   *   ③ 长文按句切块排队 —— 整篇塞进一条 utterance 会被 Chrome 中途掐断。
+   *   ③ 长文按句切块排队 —— 整篇塞进一条 utterance 会被 Chrome 中途掐断；
+   *   ④ 引擎还可能"既不回调也不出声"（静默卡死）：第一个字等了 6 秒还不出来就换下一个
+   *      语音，别让按钮永远停在「生成中...」。
    * 失败时抛带中文说明的错误，由调用方弹给老师（不再静默）。
    */
   const speakWithBrowser = async (text: string) => {
@@ -1277,13 +1290,18 @@ export default function App() {
     if (!ss) throw new Error('这个浏览器不支持语音朗读，建议改用 Chrome 或 Edge');
 
     await waitForVoices();
-    const voice = pickChineseVoice();
-
-    ss.cancel();
-    await new Promise(r => setTimeout(r, 120)); // 见 ②
-    ttsStopRef.current = false;
-
     const chunks = chunkForSpeech(text);
+    if (!chunks.length) return;
+
+    // 候选语音：排好序的中文语音取前 3 个，最后再补一个"不指定语音"（null）兜底。
+    // 最多只试 3 个 —— 每失败一个要等约 6 秒，试太多老师会以为界面卡死了。
+    const attempts: Array<SpeechSynthesisVoice | null> = [...rankChineseVoices().slice(0, 3), null];
+
+    // 清掉可能残留的上一次朗读；见 ② —— cancel() 之后必须让出一次事件循环再 speak()
+    try { ss.cancel(); } catch (_) {}
+    await new Promise(r => setTimeout(r, 200));
+
+    ttsStopRef.current = false;
     setIsPlayingAudio(true);
 
     // Chrome 的长朗读会在十几秒后自己"睡着"（paused=true 但不结束）。
@@ -1292,27 +1310,83 @@ export default function App() {
       if (!ttsStopRef.current && ss.speaking && ss.paused) ss.resume();
     }, 4000);
 
-    try {
-      await new Promise<void>((resolve, reject) => {
-        let i = 0;
-        const next = () => {
-          if (ttsStopRef.current || i >= chunks.length) return resolve();
-          const u = new SpeechSynthesisUtterance(chunks[i++]);
+    /** 用某一个语音把整篇读完；"引擎起不来"时抛错，交给外层换下一个语音。 */
+    const speakAllChunks = (voice: SpeechSynthesisVoice | null) =>
+      new Promise<void>((resolve, reject) => {
+        let started = false; // 是否已经成功读出过内容（读过就不算"引擎起不来"）
+        let idx = 0;
+
+        const tryChunk = () => {
+          if (ttsStopRef.current || idx >= chunks.length) return resolve();
+          const chunkStartAt = Date.now();
+          const u = new SpeechSynthesisUtterance(chunks[idx]);
           u.lang = 'zh-CN';
-          u.rate = 0.95;
+          u.rate = 0.95;   // ⚠️ 别超 2.0，超过引擎会卡死
           u.pitch = 1.0;
           if (voice) u.voice = voice;
-          u.onend = next;
+
+          let settled = false;
+          const guard = window.setInterval(() => {
+            if (settled) return;
+            const waited = Date.now() - chunkStartAt;
+            if (started) {
+              // 已经开过口：引擎既不 speaking 也没排队内容 ⇒ 确实结束了，收尾；
+              // 再给一个很宽的上限（30 秒），防"读一半彻底静默卡住"。
+              if ((!ss.speaking && !ss.pending) || waited > 30000) { settled = true; window.clearInterval(guard); resolve(); }
+              return;
+            }
+            // 第一个字迟迟不出来：引擎在忙就多等一会儿，否则 6 秒判定"起不来"，换语音。
+            if (waited > (ss.speaking ? 10000 : 6000)) {
+              settled = true; window.clearInterval(guard);
+              reject(new Error('synthesis-failed'));
+            }
+          }, 1000);
+
+          u.onstart = () => { started = true; };
+          u.onend = () => {
+            if (settled) return;
+            settled = true; window.clearInterval(guard);
+            started = true; idx++; tryChunk();
+          };
           u.onerror = (e: any) => {
+            if (settled) return;
             const code = e?.error || 'unknown';
-            // 老师主动按「停止朗读」时也会回调 onerror('interrupted')，那不算失败
+            settled = true; window.clearInterval(guard);
+            // 老师主动按「停止朗读」/ 被打断：当作正常结束
             if (ttsStopRef.current || code === 'interrupted' || code === 'canceled') return resolve();
-            reject(new Error(speechErrorMessage(code)));
+            // 已经读过内容还出错 ⇒ 中途断了，不再换语音重念（否则会从头重复朗读）
+            if (started) return resolve();
+            reject(new Error(code));
           };
           ss.speak(u);
         };
-        next();
+        tryChunk();
       });
+
+    try {
+      let lastCode = 'synthesis-failed';
+      for (const voice of attempts) {
+        if (ttsStopRef.current) return;
+        try {
+          await speakAllChunks(voice);
+          return; // 成功
+        } catch (e: any) {
+          lastCode = String(e?.message || 'unknown');
+          const retryable =
+            lastCode === 'synthesis-failed' || lastCode === 'voice-unavailable' ||
+            lastCode === 'language-unavailable' || lastCode === 'unknown';
+          if (!retryable) throw e;
+          // 换语音前把引擎清干净，并让出一次事件循环
+          try { ss.cancel(); } catch (_) {}
+          await new Promise(r => setTimeout(r, 200));
+        }
+      }
+      // 所有候选都失败
+      throw new Error(
+        lastCode === 'synthesis-failed'
+          ? '已试过多种中文语音都起不来（浏览器/系统语音引擎的问题）。建议改用 Edge 浏览器再试一次。'
+          : speechErrorMessage(lastCode)
+      );
     } finally {
       window.clearInterval(watchdog);
       setIsPlayingAudio(false);
@@ -1373,7 +1447,8 @@ export default function App() {
     } catch (err: any) {
       // ⚠️ 这里必须报出来。原来的降级是**静默失败** —— 语音引擎报错只写进 console，
       //    老师点了按钮、没声音、也没提示，只知道"朗读范文不行"。
-      alert(`朗读失败：${err?.message || err}\n\n提示：可在系统「设置 → 时间和语言 → 语音」里确认已安装中文语音包。`);
+      //    具体原因和可操作建议都在 err.message 里（见 speakWithBrowser / speechErrorMessage）。
+      alert(`朗读失败：${err?.message || err}`);
     } finally {
       setIsTTSLoading(false);
     }
