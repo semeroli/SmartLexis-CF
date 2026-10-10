@@ -5,6 +5,9 @@ import {
   probeAiChain,
   probeAiStream,
   probeHeartbeat,
+  callModelscopeStream,
+  pipeAiStream,
+  PROBE_TINY_PNG,
   claimAiProbe,
   keyFingerprint,
   sseFrame,
@@ -37,7 +40,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-heartbeat-json";
+const BUILD = "2026-10-10-liveprobe";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -90,6 +93,8 @@ export async function onRequestGet(context: any) {
     return jsonResponse(base, 200, noStore);
   }
 
+  const kind: AiModelKind = url.searchParams.get("kind") === "vision" ? "vision" : "text";
+
   // ?probe=1&tick=1 → 心跳探针：只发字节、不调模型、不花额度，
   // 专门量「平台允许一个流式响应活多久」。别的探针都是跑完再一次性返回，
   // 那样的响应自己就受同一个上限约束，量不出天花板本身。
@@ -124,9 +129,73 @@ export async function onRequestGet(context: any) {
     });
   }
 
-  const kind: AiModelKind = url.searchParams.get("kind") === "vision" ? "vision" : "text";
+  // ── &live=1：**真模型 + 真流式**的长跑实测 ──────────────────────
+  //
+  // 前面几个探针量的都是"平台允许多长的响应"，但那不等于"一个真实的长文生成
+  // 能不能跑完"。差别在于：真实生成全程挂着一个到魔搭的上游连接，中间任何一环
+  // （上游网关的自身超时、我们的预算、平台的资源限制）都可能先动手。
+  //
+  // 所以要问的问题只有一个：**让它一直写，它到底能写多久、写多少字。**
+  // 这直接决定「作文升格」要吐 2500 字（按 30～45 字/秒算要 55～80 秒）
+  // 是一次做完，还是必须改成"分段续写"。
+  //
+  // ⚠️ 它真花额度（一次调用），所以走 30 秒冷却闸门。
+  //    &budget=120000 可以把我们的预算放到很宽（上限 180 秒），
+  //    目的就是让**平台或上游先动手**，而不是我们自己先掐断。
+  if (url.searchParams.get("live") === "1") {
+    const clampNum = (raw: string | null, def: number, lo: number, hi: number) => {
+      const n = Number(raw || "");
+      return Number.isFinite(n) && n > 0 ? Math.min(Math.max(Math.round(n), lo), hi) : def;
+    };
+    const liveTokens = clampNum(url.searchParams.get("tokens"), 2500, 32, 4000);
+    const liveBudget = clampNum(url.searchParams.get("budget"), 120000, 10000, 180000);
+    const livePrompt = String(
+      url.searchParams.get("say") ||
+        (kind === "vision" ? "这张图是什么颜色？只回答颜色名。" : "请只回复两个字：正常")
+    ).slice(0, 2000);
 
-  // 可选：换个提示词、更长的长度、更长的单模型超时、指定要试的模型
+    const liveMessages =
+      kind === "vision"
+        ? [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: livePrompt },
+                { type: "image_url", image_url: { url: PROBE_TINY_PNG } },
+              ],
+            },
+          ]
+        : [{ role: "user", content: livePrompt }];
+
+    try {
+      const hs = await callModelscopeStream(env, kind, liveMessages, {
+        maxTokens: liveTokens,
+        timeoutMs: liveBudget,
+        totalBudgetMs: liveBudget,
+      });
+      return pipeAiStream(hs.response, hs.model, {
+        onComplete: (full, finishReason) => ({
+          live: true,
+          model: hs.model,
+          chars: full.length,
+          finishReason,
+          budgetMs: liveBudget,
+          maxTokens: liveTokens,
+        }),
+        safetyMs: liveBudget + 5000,
+        extraHeaders: corsHeadersFor(context.request),
+      });
+    } catch (e: any) {
+      const e2 = e as any;
+      return jsonResponse(
+        { mode: "live", error: String(e2?.message || e).slice(0, 300), status: e2?.status || 502 },
+        e2?.status || 502,
+        noStore
+      );
+    }
+  }
+
+    // 可选：换个提示词、更长的长度、更长的单模型超时、指定要试的模型
   // （默认那 32 字只够它说半句"思考过程"，看不出最终答案长什么样）
   const rawTokens = Number(url.searchParams.get("tokens") || "");
   const maxTokens = Number.isFinite(rawTokens) && rawTokens > 0 ? rawTokens : undefined;

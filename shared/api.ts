@@ -1140,6 +1140,13 @@ export function pipeAiStream(
     transformFinal?: (full: string) => string;
     /** 只想下发增量文本时用；默认直接下发 delta.content */
     extraHeaders?: Record<string, string>;
+    /**
+     * 本次流的硬停上限（毫秒）。默认 STREAM_SAFETY_MS。
+     * 长产出接口（作文升格要吐 2500 字）需要比默认更宽 ——
+     * 实测免费模型只有 30～45 字/秒，2500 字就要 55～80 秒，
+     * 默认 60 秒会把一个"正常但慢"的生成当成故障掐掉。
+     */
+    safetyMs?: number;
   }
 ): Response {
   const timer = (upstream as any).__slAbortTimer;
@@ -1156,11 +1163,12 @@ export function pipeAiStream(
         try { controller.enqueue(sseFrame(obj)); } catch (_) { closed = true; }
       };
 
+      const safetyMs = opts.safetyMs && opts.safetyMs > 0 ? opts.safetyMs : STREAM_SAFETY_MS;
       const hardStop = setTimeout(() => {
         try { abortController?.abort(); } catch (_) {}
         send({ type: "error", message: "生成时间过长已中止，请重试一次" });
         close();
-      }, STREAM_SAFETY_MS);
+      }, safetyMs);
 
       try {
         send({ type: "meta", model });
@@ -1247,7 +1255,7 @@ export function pipeAiStream(
 // ─────────────────────────────────────────────────────────────
 
 /** 64×64 纯白 PNG。用来做视觉模型的「你能不能真读到一张图」最小验证。 */
-const PROBE_TINY_PNG =
+export const PROBE_TINY_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAXklEQVR4nO3PMQ0AMAzAsPInvYLYYVWKESTzjhsd8KsBrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BrQGtAa0BbQHKU9LC7/CP1AAAAABJRU5ErkJggg==";
 
 export interface AiProbeItem {
