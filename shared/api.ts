@@ -851,13 +851,21 @@ export async function probeAiChain(
     totalBudgetMs?: number;
     maxTokens?: number;
     prompt?: string;
+    /** 指定要试的模型名（逗号分隔也行）—— 用来摸候选池，不用改代码 */
+    models?: string[] | string;
   } = {}
 ): Promise<AiProbeResult> {
   const keys = modelscopeKeys(env);
-  const chain = modelscopeModelChain(env, kind);
+  const asked = Array.isArray(opts.models)
+    ? opts.models
+    : String(opts.models || "").split(",");
+  const named = asked.map((s) => String(s).trim()).filter(Boolean);
+  const chain = named.length ? [...new Set(named)].slice(0, 12) : modelscopeModelChain(env, kind);
   const endpoint = aiEndpoint(env, kind);
   const perModelTimeoutMs = opts.perModelTimeoutMs ?? 8000;
-  const budgetMs = opts.totalBudgetMs ?? 26000;
+  // 总预算跟着单模型超时走（否则「特意放长超时」会被总预算先掐死）；
+  // 但绝不越过平台那条线 —— 实测 40.5 秒的请求会被 CF 自己吐 502 HTML。
+  const budgetMs = opts.totalBudgetMs ?? Math.min(Math.max(26000, perModelTimeoutMs * 2 + 4000), 32000);
   const maxTokens = Math.min(Math.max(opts.maxTokens ?? 32, 8), 2000);
   const defaultPrompt = kind === "vision" ? "这张图是什么颜色？只回答颜色名。" : "请只回复两个字：正常";
   const askText = String(opts.prompt || defaultPrompt).slice(0, 500);

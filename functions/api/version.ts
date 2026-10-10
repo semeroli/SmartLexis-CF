@@ -24,7 +24,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-probe-verbose";
+const BUILD = "2026-10-10-probe-models";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -79,11 +79,15 @@ export async function onRequestGet(context: any) {
 
   const kind: AiModelKind = url.searchParams.get("kind") === "vision" ? "vision" : "text";
 
-  // 可选：换个提示词和更长的长度，看看模型在**真实长度**下返回什么形状
+  // 可选：换个提示词、更长的长度、更长的单模型超时、指定要试的模型
   // （默认那 32 字只够它说半句"思考过程"，看不出最终答案长什么样）
   const rawTokens = Number(url.searchParams.get("tokens") || "");
   const maxTokens = Number.isFinite(rawTokens) && rawTokens > 0 ? rawTokens : undefined;
   const prompt = url.searchParams.get("say") || undefined;
+  const rawTimeout = Number(url.searchParams.get("timeout") || "");
+  const perModelTimeoutMs =
+    Number.isFinite(rawTimeout) && rawTimeout >= 1000 ? Math.min(rawTimeout, 25000) : undefined;
+  const models = url.searchParams.get("models") || undefined;
 
   const gate = await claimAiProbe(env, 30000);
   if (!gate.ok) {
@@ -104,7 +108,7 @@ export async function onRequestGet(context: any) {
 
   let probe: any;
   try {
-    probe = await probeAiChain(env, kind, { maxTokens, prompt });
+    probe = await probeAiChain(env, kind, { maxTokens, prompt, perModelTimeoutMs, models });
   } catch (e: any) {
     probe = { kind, error: String(e?.message || e).slice(0, 300) };
   }
