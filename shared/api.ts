@@ -1147,6 +1147,16 @@ export function pipeAiStream(
      * 默认 60 秒会把一个"正常但慢"的生成当成故障掐掉。
      */
     safetyMs?: number;
+    /**
+     * 是否额外下发"思考进度"帧（默认否，生产行为不变）。
+     *
+     * 为什么需要它：实测长文生成时，推理型模型会先思考 50～60 秒才吐第一个正文字，
+     * 那段时间它其实在**一直吐 reasoning_content**，只是我们只认 content、把它全丢了。
+     * 结果就是老师盯着一个不动的转圈——"边生成边显示"的收益等于没拿到。
+     * 打开后把这些思考增量折成 `{type:"progress", reasoningChars}` 帧
+     * （只报字数、不下发原文），前端就能显示"正在思考…（已思考 N 字）"。
+     */
+    progressFrames?: boolean;
   }
 ): Response {
   const timer = (upstream as any).__slAbortTimer;
@@ -1154,8 +1164,11 @@ export function pipeAiStream(
 
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
+      const t0Stream = Date.now();
       let full = "";
       let finishReason = "";
+      let reasoningChars = 0;
+      let lastProgressAt = 0;
       let closed = false;
       const close = () => { if (!closed) { closed = true; try { controller.close(); } catch (_) {} } };
       const send = (obj: Record<string, any>) => {
@@ -1199,10 +1212,27 @@ export function pipeAiStream(
             const choice = obj?.choices?.[0];
             if (choice?.finish_reason) finishReason = String(choice.finish_reason);
             // 同时兼容 delta（流式）与 message（个别平台流里也塞 message）
+            // 思考增量：不下发原文，只在开启 progressFrames 时折成"已思考 N 字"。
+            // 不管开不开，都要数着 —— 收尾时它决定了"这次为什么这么久才有正文"。
+            const think = String(
+              choice?.delta?.reasoning_content ??
+                choice?.delta?.reasoning ??
+                choice?.message?.reasoning_content ??
+                ""
+            );
+            if (think) reasoningChars += think.length;
+
             const piece = String(choice?.delta?.content ?? choice?.message?.content ?? "");
             if (piece) {
               full += piece;
               send({ type: "delta", text: piece });
+            } else if (opts.progressFrames && reasoningChars) {
+              const now = Date.now();
+              // 最多每秒一帧，别把连接塞满
+              if (now - lastProgressAt >= 1000) {
+                lastProgressAt = now;
+                send({ type: "progress", reasoningChars, elapsedMs: now - t0Stream });
+              }
             }
           }
         }
@@ -1216,7 +1246,16 @@ export function pipeAiStream(
         } else {
           const finalText = opts.transformFinal ? opts.transformFinal(full) : full;
           const payload = await opts.onComplete(full, finishReason);
-          send({ type: "done", text: finalText, model, finishReason, ...payload });
+          // reasoningChars 一并带上：它解释了"为什么等了这么久才出正文"
+          send({
+            type: "done",
+            text: finalText,
+            model,
+            finishReason,
+            reasoningChars,
+            totalMs: Date.now() - t0Stream,
+            ...payload,
+          });
         }
       } catch (e: any) {
         // 调用方在 onComplete 里主动抛 HttpError(502, "……") 时，文案本来就是给老师看的，

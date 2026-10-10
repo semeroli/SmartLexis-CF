@@ -40,7 +40,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-liveprobe";
+const BUILD = "2026-10-10-reasoning";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -167,8 +167,15 @@ export async function onRequestGet(context: any) {
           ]
         : [{ role: "user", content: livePrompt }];
 
+    // &models=点名 → 只试指定的模型（用来横向比"谁最快吐第一个正文字"）。
+    // 走环境变量覆盖那条路，不用改 callModelscopeStream 的签名。
+    const liveModels = (url.searchParams.get("models") || "").trim();
+    const liveEnv = liveModels
+      ? { ...env, ...(kind === "vision" ? { MODELSCOPE_VISION_MODEL: liveModels } : { MODELSCOPE_TEXT_MODEL: liveModels }) }
+      : env;
+
     try {
-      const hs = await callModelscopeStream(env, kind, liveMessages, {
+      const hs = await callModelscopeStream(liveEnv, kind, liveMessages, {
         maxTokens: liveTokens,
         timeoutMs: liveBudget,
         totalBudgetMs: liveBudget,
@@ -183,6 +190,9 @@ export async function onRequestGet(context: any) {
           maxTokens: liveTokens,
         }),
         safetyMs: liveBudget + 5000,
+        // 打开"思考进度"帧 —— 长文生成时推理模型会先思考很久才吐正文字，
+        // 这段空窗必须让客户端看得出来，否则就变成"转圈 60 秒"。
+        progressFrames: true,
         extraHeaders: corsHeadersFor(context.request),
       });
     } catch (e: any) {
