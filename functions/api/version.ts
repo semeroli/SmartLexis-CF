@@ -1,4 +1,4 @@
-import { corsHeadersFor, jsonResponse } from "../../shared/api";
+import { corsHeadersFor, jsonResponse, readAiDiag } from "../../shared/api";
 
 // ─────────────────────────────────────────────────────────────
 // 版本探针（公开、不需要登录、不读写任何数据）
@@ -13,12 +13,12 @@ import { corsHeadersFor, jsonResponse } from "../../shared/api";
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-09-text-model-switch";
+const BUILD = "2026-10-10-ai-diag";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
 
-export function onRequestGet(context: any) {
+export async function onRequestGet(context: any) {
   const env = context?.env || {};
 
   // 只回报「配了没有」，绝不回值本身
@@ -26,6 +26,10 @@ export function onRequestGet(context: any) {
     .split(",")
     .map((s: string) => s.trim())
     .filter(Boolean);
+
+  // 最近一次 AI 调用的"行车记录"。phase 停在 started 就说明中途被平台掐断了。
+  let lastAiCall: any = null;
+  try { lastAiCall = await readAiDiag(env); } catch (_) {}
 
   return jsonResponse(
     {
@@ -38,6 +42,7 @@ export function onRequestGet(context: any) {
         GEMINI_API_KEY: env.GEMINI_API_KEY ? "已配置" : "❌ 未配置",
         D1_DB: env.DB ? "已绑定" : "❌ 未绑定",
       },
+      lastAiCall,
     },
     200,
     corsHeadersFor(context.request)

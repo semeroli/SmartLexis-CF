@@ -307,6 +307,67 @@ const AI_KIND_LABEL: Record<string, string> = {
   tts: "语音朗读",
 };
 
+// ─────────────────────────────────────────────────────────────
+// AI 调用「行车记录仪」
+//
+// 为什么需要这个东西（2026-10-10 加的）：
+//   线上出问题时我们往往**什么都看不到** —— 请求被平台中途掐断，返回一张
+//   Cloudflare 自己的 502 页面，我们的日志和错误响应一起被吞掉。前端只能
+//   显示一句"服务器错误"，谁也说不清卡在哪一步。
+//   所以在每次 AI 调用的「开始」和「结束」各写一条记录进 D1（只保留最新一条，
+//   不累积），再通过公开的 /api/version 暴露出来。
+//
+// 🔑 判读要点：**只有「开始」、没有「结束」** ⇒ 这次调用在中途被平台掐断了。
+//    这本身就是最关键的信息（说明耗时超过了平台允许的上限）。
+// ─────────────────────────────────────────────────────────────
+let aiDiagTableReady = false;
+
+async function ensureAiDiagTable(env: any): Promise<void> {
+  if (aiDiagTableReady || !env?.DB) return;
+  await env.DB.prepare(
+    `CREATE TABLE IF NOT EXISTS ai_diag (
+      id TEXT PRIMARY KEY,
+      at TEXT,
+      kind TEXT,
+      phase TEXT,
+      elapsedMs INTEGER,
+      detail TEXT
+    )`
+  ).run();
+  aiDiagTableReady = true;
+}
+
+/** 记一次 AI 调用的阶段（started / succeeded / failed）。失败绝不影响主流程。 */
+export async function writeAiDiag(
+  env: any,
+  kind: string,
+  phase: string,
+  elapsedMs: number,
+  detail: string
+): Promise<void> {
+  try {
+    await ensureAiDiagTable(env);
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO ai_diag (id, at, kind, phase, elapsedMs, detail)
+       VALUES ('last', ?, ?, ?, ?, ?)`
+    )
+      .bind(new Date().toISOString(), kind, phase, Math.round(elapsedMs), String(detail).slice(0, 900))
+      .run();
+  } catch (_) {
+    /* 记录失败不能影响正常功能 */
+  }
+}
+
+/** 读最近一次记录，供 /api/version 展示 */
+export async function readAiDiag(env: any): Promise<any> {
+  try {
+    await ensureAiDiagTable(env);
+    return await env.DB.prepare(`SELECT * FROM ai_diag WHERE id = 'last'`).first();
+  } catch (_) {
+    return null;
+  }
+}
+
 let aiUsageTableReady = false;
 /** 用量表懒创建；每个 isolate 只建一次，避免每个请求都跑一次 DDL（那是写操作） */
 export async function ensureAiUsageTable(env: any): Promise<void> {
@@ -604,6 +665,9 @@ export async function callModelscope(
   const budgetMs = opts.totalBudgetMs ?? 28000;
   const startedAt = Date.now();
   const attempts: AiAttempt[] = [];
+  // 行车记录仪：先把"这次调用开始了"记下来。万一后面被平台掐断，
+  // 记录会停在 started 这个阶段 —— 那正是我们最需要知道的信号。
+  await writeAiDiag(env, kind, "started", 0, `候选链：${chain.join(" → ")}`);
 
   for (const model of chain) {
     // 已知「平台不提供 / 本账号无权限」的模型直接跳过，不浪费老师的时间
@@ -673,6 +737,7 @@ export async function callModelscope(
       }
 
       lastGoodModel[kind] = model;
+      await writeAiDiag(env, kind, "succeeded", Date.now() - startedAt, `使用 ${model}`);
       return { content, model, attempts };
     } catch (e: any) {
       clearTimeout(timer);
@@ -702,6 +767,14 @@ export async function callModelscope(
       attempts
         .map((a) => `${a.model}→${a.result}${a.note ? "「" + a.note.slice(0, 90) + "」" : ""}`)
         .join(" || ")
+  );
+
+  await writeAiDiag(
+    env,
+    kind,
+    "failed",
+    Date.now() - startedAt,
+    attempts.map((a) => `${a.model}→${a.result}`).join(" | ") || "全部候选被跳过"
   );
 
   throw new HttpError(502, `AI 服务暂不可用（${detail}）`);
