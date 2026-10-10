@@ -14,6 +14,7 @@ import {
   recordAiUsage,
   requireUser,
   resolveOwnerTeacherId,
+  streamBudgetAfter,
   wantsStream,
 } from "../../shared/api";
 
@@ -152,15 +153,17 @@ export async function onRequestPost(context: any) {
     //   评分 JSON（约 416 字）→ Qwen3.8-Flash-Next 13.9 秒
     //   评分 JSON（约 629 字）→ DeepSeek-V4.1-Flash 13.4 秒
     //
-    // 握手 18 秒：多久之内必须把流开起来；开不起来就快速换下一个模型。
-    // ⚠️ `timeoutMs` 从此只管**握手**，不再限制正文能写多久 —— 那归流式转发层的
+    // 握手 45 秒：多久之内必须把流开起来；开不起来就换下一个模型。
+    // ⚠️ `timeoutMs` 只管**握手**，不限制正文能写多久 —— 那归流式转发层的
     //    safetyMs / stallMs 管。因为实测同一个模型两次可以差 7 倍
     //    （同一提示词，首字 8.2 秒 vs 61.6 秒），拿总时长判生死只会误杀"慢但正常"的生成。
-    // 总预算 60 秒：2026-10-11 线上实测握手偶尔要 32 秒（免费额度被限流时排队），
-    //    只给 30 秒会一次全链失败；60 秒够每个候选模型各被握一次（典型 5～8 秒）。
-    const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 60000 };
-    // 这个接口出的是短 JSON（几百字），45 秒的安全上限绰绰有余。
-    const STREAM_OPTS = { safetyMs: 45000, progressFrames: true, diag: { env, kind: "text" } };
+    // 2026-10-10 真机实测：上游排队时光等响应头要 34.9 秒，原来给 18 秒 ⇒ 原地被掐死。
+    //    总预算 90 秒，够两个候选模型各被握一次。
+    const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 45000, totalBudgetMs: 90000 };
+    // 这个接口出的是短 JSON（几百字），安全上限按"整条响应总上限 - 握手时间"算。
+    // 实测首字 11.7～22.2 秒、全程 15.9～24.3 秒，但同一天的其它接口首字到过 59.8 秒，
+    // 所以不能只按自己这份的实测值来定（一次坏的运气就会把正常生成掐断）。
+    const STREAM_OPTS = { progressFrames: true, diag: { env, kind: "text" } };
 
     /**
      * 从模型回答里把 JSON「抠」出来、校验、落库，最后拼出前端要的记录。
@@ -275,10 +278,12 @@ export async function onRequestPost(context: any) {
     // 评分报告是 JSON，正文没法直接看，所以前端拿增量算进度、收尾再渲染。
     // 收益主要在"不贴着平台单请求上限"和"能看出确实在跑"。
     if (wantsStream(request)) {
+      const t0 = Date.now();
       const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
-      console.log(`作文阅卷（流式）使用模型: ${hs.model}`);
+      console.log(`作文阅卷（流式）使用模型: ${hs.model}（握手 ${Date.now() - t0}ms）`);
       return pipeAiStream(hs.response, hs.model, {
         onComplete: async (full) => ({ result: await finalizeEssayResult(full) }),
+        safetyMs: streamBudgetAfter(Date.now() - t0),
         ...STREAM_OPTS,
       });
     }

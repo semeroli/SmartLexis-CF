@@ -8,6 +8,7 @@ import {
   pipeAiStream,
   recordAiUsage,
   requireUser,
+  streamBudgetAfter,
   stripThinkingNoise,
   wantsStream,
 } from "../../shared/api";
@@ -68,22 +69,30 @@ export async function onRequestPost(context: any) {
       { role: "system", content: "你是资深语文教育专家。" },
       { role: "user", content: prompt },
     ];
-    // 握手 20 秒（开不起流就换下一个模型）、总预算 60 秒。
-    // ⚠️ timeoutMs 只管**握手**，不再限制正文能写多久 —— 那归 safetyMs / stallMs。
-    //    实测同一个模型两次差 7 倍，拿总时长判生死会误杀"慢但正常"的生成。
-    // 总预算放宽到 60 秒：2026-10-11 线上实测握手偶尔要 32 秒（限流时排队），
-    //    30 秒会一次全链失败，60 秒够后面的候选模型也有机会被握上。
-    const AI_OPTS = { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 60000 };
-    // 这份报告约 1000～2500 字。实测出字速度约 90～110 字/秒，加上开头思考几秒，
-    // 满打满算 30 秒上下；70 秒的安全上限留足余量（平台实测能撑 120 秒以上）。
-    const STREAM_OPTS = { safetyMs: 70000, progressFrames: true, diag: { env, kind: "text" } };
+    // ⚠️ timeoutMs 只管**握手**（多久之内必须把流开起来），不限制正文能写多久
+    //    —— 那归 safetyMs / stallMs。实测同一个模型两次差 7 倍，拿总时长判生死
+    //    只会误杀"慢但正常"的生成。
+    // 2026-10-10 线上真机实测（管理员账号）：
+    //    · 上游排队时，**光等响应头就要 34.9 秒**（正常时 3 秒）；
+    //      原来给 20 秒 ⇒ 四个模型全部在原地被掐死，60 秒预算被吃光，老师拿到 502。
+    //    · 这一份报告实测跑了 67.7 秒（其中前 35.7 秒在"构思"，思考了 2034 字）。
+    // 所以握手放宽到 45 秒、总预算放宽到 90 秒（够两个模型各试一次）。
+    const AI_OPTS = { temperature: 0.7, maxTokens: 4000, timeoutMs: 45000, totalBudgetMs: 90000 };
+    // maxTokens 2500 → 4000：实测 2500 时正文写到 3853 字被截断（finish=length），
+    // 报告是不完整的。放宽后能自然收尾。
+    //
+    // safetyMs 不再写死一个数，而是「整条响应总上限 - 握手已花掉的时间」
+    //（见 shared/api.ts 的 STREAM_TOTAL_CAP_MS）—— 因为握手排队多久是不可控的，
+    // 写死 70 秒时实测已经用到 67.7 秒，余量只剩 2.3 秒，再慢一点就被自己掐断。
+    const STREAM_OPTS = { progressFrames: true, diag: { env, kind: "text" } };
 
     // ── 流式：老师要边生成边看 ──────────────────────────────
     // 学情分析是一份 1000 字上下的长报告，等它一次性吐完要 20～30 秒。
     // 改成流式之后，字一个一个出来，等待感基本没了，也不再贴着平台单请求上限。
     if (wantsStream(request)) {
+      const t0 = Date.now();
       const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
-      console.log(`学情分析（流式）使用模型: ${hs.model}`);
+      console.log(`学情分析（流式）使用模型: ${hs.model}（握手 ${Date.now() - t0}ms）`);
       return pipeAiStream(hs.response, hs.model, {
         // 兜一层"思考过程"污染的网：流里没法提前判断，收尾时统一剥。
         transformFinal: stripThinkingNoise,
@@ -91,6 +100,7 @@ export async function onRequestPost(context: any) {
           await recordAiUsage(env, user, "analyze");
           return { status: "ok" };
         },
+        safetyMs: streamBudgetAfter(Date.now() - t0),
         ...STREAM_OPTS,
       });
     }

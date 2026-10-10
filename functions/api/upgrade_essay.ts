@@ -9,6 +9,7 @@ import {
   recordAiUsage,
   requireUser,
   stripThinkingNoise,
+  streamBudgetAfter,
   wantsStream,
 } from "../../shared/api";
 
@@ -62,13 +63,13 @@ ${content}
       { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
       { role: "user", content: prompt },
     ];
-    // 握手 22 秒（这个接口提示词最长，模型受理得慢一点），总预算 60 秒
-    //（缘由见 analyze_essay.ts 的同一处注释）
-    const AI_OPTS = { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 60000 };
-    // 四个接口里产出最长（整篇升格范文，2000～2800 字），安全上限给到 90 秒。
-    // 实测出字速度约 90～110 字/秒，2800 字约 25～30 秒，加上开头思考几秒 ——
-    // 90 秒是给"平台那天特别慢"留的余量（平台本身实测能撑 120 秒以上）。
-    const STREAM_OPTS = { safetyMs: 90000, progressFrames: true, diag: { env, kind: "text" } };
+    // 握手 45 秒、总预算 90 秒（缘由见 analyze_student.ts 的同一处注释）：
+    // 2026-10-10 真机实测上游排队时光等响应头要 34.9 秒，原来 22 秒 ⇒ 全链原地被掐死。
+    const AI_OPTS = { temperature: 0.7, maxTokens: 3500, timeoutMs: 45000, totalBudgetMs: 90000 };
+    // 四个接口里产出最长（整篇升格范文，2000～2800 字）。
+    // 安全上限按"整条响应总上限 - 握手已花掉的时间"算：
+    // 实测这一份跑了 81.6 秒（首字 59.8 秒，思考 4619 字），写死 90 秒只剩 8.4 秒余量。
+    const STREAM_OPTS = { progressFrames: true, diag: { env, kind: "text" } };
 
     // ── 流式：这个功能产出 2000～2800 字，是四个里最长的 ────────
     // 它其实早就该改流式了：一次性返回要等 30～50 秒，老师只能对着转圈等。
@@ -76,14 +77,16 @@ ${content}
     // 那个上限经实测在普通请求上也不存在（62.8 秒的普通 JSON 请求照样返回）；
     // 真正的收益是**等待感消失**，以及长文不再被我们自己的预算掐断。
     if (wantsStream(request)) {
+      const t0 = Date.now();
       const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
-      console.log(`作文升格（流式）使用模型: ${hs.model}`);
+      console.log(`作文升格（流式）使用模型: ${hs.model}（握手 ${Date.now() - t0}ms）`);
       return pipeAiStream(hs.response, hs.model, {
         transformFinal: stripThinkingNoise,
         onComplete: async () => {
           await recordAiUsage(env, user, "upgrade");
           return {};
         },
+        safetyMs: streamBudgetAfter(Date.now() - t0),
         ...STREAM_OPTS,
       });
     }

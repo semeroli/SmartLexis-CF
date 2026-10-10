@@ -9,6 +9,7 @@ import {
   pipeAiStream,
   recordAiUsage,
   requireUser,
+  streamBudgetAfter,
   wantsStream,
 } from "../../shared/api";
 
@@ -157,10 +158,12 @@ export async function onRequestPost(context: any) {
       { role: "system", content: "你是语文出题专家。" },
       { role: "user", content: prompt },
     ];
-    // 握手 20 秒、总预算 60 秒（缘由见 analyze_essay.ts 的同一处注释）
-    const AI_OPTS = { temperature: 0.7, maxTokens: 3000, timeoutMs: 20000, totalBudgetMs: 60000 };
-    // 题目＋选项＋解析，可能要 3000 字，给 80 秒安全上限。
-    const STREAM_OPTS = { safetyMs: 80000, progressFrames: true, diag: { env, kind: "text" } };
+    // 握手 45 秒、总预算 90 秒（缘由见 analyze_student.ts 的同一处注释）：
+    // 2026-10-10 真机实测上游排队时光等响应头要 34.9 秒，原来给 20 秒 ⇒ 全链原地被掐死。
+    const AI_OPTS = { temperature: 0.7, maxTokens: 3000, timeoutMs: 45000, totalBudgetMs: 90000 };
+    // 安全上限不再写死：按"整条响应总上限 - 握手已花掉的时间"算。
+    // 实测这一份跑了 70.9 秒（首字 48.7 秒，思考 6211 字），写死 80 秒只剩 9 秒余量。
+    const STREAM_OPTS = { progressFrames: true, diag: { env, kind: "text" } };
 
     // ── 流式 ────────────────────────────────────────────────
     // 这个接口产出的是 JSON（题目＋选项＋解析），正文没法直接看，
@@ -168,14 +171,16 @@ export async function onRequestPost(context: any) {
     // 好处是老师能看出"确实在生成"，而不是对着一个转圈的按钮怀疑卡死了；
     // 而且请求全程在传字节，不容易被平台的空闲判断掐断。
     if (wantsStream(request)) {
+      const t0 = Date.now();
       const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
-      console.log(`专项练习（流式）使用模型: ${hs.model}`);
+      console.log(`专项练习（流式）使用模型: ${hs.model}（握手 ${Date.now() - t0}ms）`);
       return pipeAiStream(hs.response, hs.model, {
         onComplete: async (full) => {
           const practice = buildPractice(full);
           await recordAiUsage(env, user, "practice");
           return { result: practice };
         },
+        safetyMs: streamBudgetAfter(Date.now() - t0),
         ...STREAM_OPTS,
       });
     }

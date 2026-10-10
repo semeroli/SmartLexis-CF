@@ -40,7 +40,7 @@ import {
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-11-diag2";
+const BUILD = "2026-10-11-timeout-fix";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });

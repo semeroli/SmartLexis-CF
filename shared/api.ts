@@ -962,6 +962,32 @@ export interface AiStreamHandshake {
 const STREAM_SAFETY_MS = 60000;
 
 /**
+ * 整条流式响应（**从收到请求算起**）的总时长上限，约 105 秒。
+ *
+ * 为什么需要一个"总数"：
+ *   平台的单请求上限实测约 120 秒（心跳探针跑到 120.7 秒；§23 记录）。
+ *   一旦越线，平台会返回它自己的 502 HTML —— 老师看到一张什么都看不懂的错误页，
+ *   比我们主动说一句"这题没生成完，请重试"更糟（§16 踩过）。
+ *   所以必须保证**是我们先收手**。
+ *
+ * 为什么不是直接把 safetyMs 设成一个大数：
+ *   safetyMs 是从**开流之后**开始算的，而握手（等上游返回响应头）可能排很久的队
+ *   —— 2026-10-10 实测同一个模型排队 34.9 秒才开流，正常时只要 3 秒。
+ *   两段加起来才是老师真正等待的时间，所以要在开流时把已经花掉的握手时间扣掉。
+ *   用法：`safetyMs: streamBudgetAfter(Date.now() - t0)`。
+ */
+export const STREAM_TOTAL_CAP_MS = 105000;
+
+/**
+ * 按"整条响应总上限"算出这一枪流式还能跑多久。
+ * @param handshakeMs 握手（等上游返回响应头）已经花掉的时间
+ * @param floorMs 无论如何给的保底时长 —— 太低会把"只是慢"的生成误杀
+ */
+export function streamBudgetAfter(handshakeMs: number, floorMs = 30000): number {
+  return Math.max(floorMs, STREAM_TOTAL_CAP_MS - Math.max(0, handshakeMs));
+}
+
+/**
  * 停滞检测的默认阈值：多久没有任何新内容就算卡死。
  * 见 pipeAiStream 的 stallMs 注释 —— 判据是"没有新内容"，不是"总时长"。
  */

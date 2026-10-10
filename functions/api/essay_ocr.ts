@@ -112,10 +112,12 @@ export async function onRequestPost(context: any) {
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: contentParts },
       ],
-      // 预算安排（理由见 analyze_essay.ts 里那段注释）：
-      //   单模型 20 秒、整条链 30 秒 —— 保证排在第二的模型也有 10 秒可用。
-      // 认字这一步的输出比"评分报告"小得多，所以总预算比阅卷更紧一点是安全的。
-      { temperature: 0.1, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 30000 }
+      // ⚠️ 2026-10-10 真机实测修正：原来是「单模型 20 秒、整条链 30 秒」，
+      //    但上游排队时光等响应头就要 34.9 秒 ⇒ 第一枪 20 秒被掐死、第二枪只剩 10 秒
+      //    也必然超时，认字整体不可用（当天实测确实这样失败过一次）。
+      //    而且 20 秒 × 2 个模型 = 40 秒 > 30 秒预算，本来就自相矛盾。
+      // 现在：单模型 45 秒、整条链 90 秒 ⇒ 视觉链两个模型各能握满一次。
+      { temperature: 0.1, maxTokens: 2500, timeoutMs: 45000, totalBudgetMs: 90000 }
     );
 
     console.log(
