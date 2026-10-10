@@ -1202,6 +1202,11 @@ export function pipeAiStream(
     diag?: { env: any; kind: string };
   }
 ): Response {
+  // ⚠️ 记录仪必须在**响应结束之前**写完，不能放在 finally 里"收尾顺手一写"。
+  //    实测（2026-10-11 线上）：响应一 close，Workers 就不再等这条待决的 D1 写入了，
+  //    于是记录永远停在 started —— 而这正是"被平台掐断"的判据，等于报告故障。
+  //    对照组很明确：onComplete 里的写库（记用量、落库）一直都成功，
+  //    因为那些发生在 done 帧之前。所以这里照抄同一个时序。
   const timer = (upstream as any).__slAbortTimer;
   const abortController = (upstream as any).__slController;
 
@@ -1236,12 +1241,29 @@ export function pipeAiStream(
       //    行车记录仪永远收不了尾、定时器也不清理。实测踩过这个坑。
       let stopRead: () => void = () => {};
       const stopPromise = new Promise<void>((r) => { stopRead = r; });
-      const abortNow = (note: string, userMessage: string) => {
+
+      // 记录仪：写一次就够（diagWritten 防重复）。写成 async，调用方按需 await。
+      let diagWritten = false;
+      const recordDiag = async (): Promise<void> => {
+        if (diagWritten || !opts.diag) return;
+        diagWritten = true;
+        const phase = clientGone ? "client-gone" : failureNote ? "failed" : "succeeded";
+        const ms = Date.now() - t0Stream;
+        const detail =
+          `流式收尾 ｜ ${model} ｜ 正文 ${full.length} 字` +
+          (reasoningChars ? `（另思考 ${reasoningChars} 字）` : "") +
+          (finishReason ? ` ｜ finish=${finishReason}` : "") +
+          (failureNote ? ` ｜ ${failureNote}` : "");
+        await writeAiDiag(opts.diag.env, opts.diag.kind, phase, ms, detail);
+      };
+
+      const abortNow = async (note: string, userMessage: string) => {
         failureNote = note;
         try { abortController?.abort(); } catch (_) {}
         send({ type: "error", message: userMessage });
-        close();
         stopRead();
+        await recordDiag();
+        close();
       };
 
       const safetyMs = opts.safetyMs && opts.safetyMs > 0 ? opts.safetyMs : STREAM_SAFETY_MS;
@@ -1333,7 +1355,7 @@ export function pipeAiStream(
         //    如果漏了这一条，就会把一个半截结果当成完成品发 done ——
         //    前端会把残缺报告当正式结果落库，比直接报错更糟。
         if (failureNote) {
-          // 错误帧已经发过了，这里什么都不做
+          // 错误帧已经发过了，这里什么都不做（记录也已写在这条路径上）
         } else if (!full.trim()) {
           // 上游 200 但一个字都没吐（实测遇到过）。这时**不要**调 onComplete ——
           // 否则会记一次"成功"的用量，还把空结果落库。
@@ -1368,20 +1390,15 @@ export function pipeAiStream(
         clearTimeout(hardStop);
         clearInterval(stallTimer);
         if (timer) clearTimeout(timer);
-        close();
 
-        // 行车记录仪收尾。⚠️ 这条**必须**有：只有 started、没有收尾，
-        // 原本就是「被平台半路掐断」的判据；流式下如果不写，成功和掐断就分不清了。
-        if (opts.diag) {
-          const ms = Date.now() - t0Stream;
-          const phase = clientGone ? "client-gone" : failureNote ? "failed" : "succeeded";
-          const detail =
-            `流式收尾 ｜ ${model} ｜ 正文 ${full.length} 字` +
-            (reasoningChars ? `（另思考 ${reasoningChars} 字）` : "") +
-            (finishReason ? ` ｜ finish=${finishReason}` : "") +
-            (failureNote ? ` ｜ ${failureNote}` : "");
-          await writeAiDiag(opts.diag.env, opts.diag.kind, phase, ms, detail).catch(() => {});
-        }
+        // ⚠️⚠️ 顺序是这里的全部要点：**先写记录，再 close()**。
+        //   第一次修这个 bug 时我把它放在 close() 之后（"收尾顺手一写"），
+        //   线上验证仍然失败 —— 响应一结束，Workers 就不再等这条待决的 D1 写入了。
+        //   这条记录**必须**有：只有 started、没有收尾，本来就是「被平台半路掐断」的判据，
+        //   少了它，成功和被掐断长得一模一样，线上定位故障就全靠猜。
+        //   放在 finally 里能一次覆盖全部出口：成功 / 空正文 / 抛异常 / 客户端关页。
+        await recordDiag();
+        close();
       }
     },
   });
