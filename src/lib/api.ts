@@ -122,6 +122,14 @@ export interface AiStreamHandlers {
   onDelta?: (fullText: string) => void;
   /** 正常结束。payload 是 done 帧的全部字段（含 text / result 等） */
   onDone?: (payload: any) => void;
+  /**
+   * 「还在思考」的进度：模型已经在吐内容了，但吐的是思考过程、还没轮到正文。
+   *
+   * 为什么需要它：实测推理型模型会先思考十几秒到几十秒才写第一个正文字，
+   * 那段时间如果界面上什么都不动，老师会以为卡死了。
+   * ⚠️ 这里**只有字数**，没有思考原文 —— 思考内容不该给老师看，也不该进记录。
+   */
+  onThinking?: (reasoningChars: number) => void;
 }
 
 export async function apiStream(
@@ -164,6 +172,8 @@ export async function apiStream(
       } else if (ev.type === "delta") {
         full += String(ev.text || "");
         handlers.onDelta?.(full);
+      } else if (ev.type === "progress") {
+        handlers.onThinking?.(Number(ev.reasoningChars) || 0);
       } else if (ev.type === "done") {
         finished = true;
         lastDone = ev;

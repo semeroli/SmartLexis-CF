@@ -68,9 +68,13 @@ export async function onRequestPost(context: any) {
       { role: "system", content: "你是资深语文教育专家。" },
       { role: "user", content: prompt },
     ];
-    // 单模型 20 秒、总预算 30 秒 —— 保证排在后面的模型也有公平机会
-    // （详细缘由见 analyze_essay.ts 的同一处注释）
+    // 握手 20 秒（开不起流就换下一个模型）、总预算 30 秒。
+    // ⚠️ timeoutMs 从此只管**握手**，不再限制正文能写多久 ——
+    // 实测同一个模型两次差 7 倍，拿总时长判生死会误杀"慢但正常"的生成。
     const AI_OPTS = { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 30000 };
+    // 这份报告约 1000～2500 字。实测出字速度约 90～110 字/秒，加上开头思考几秒，
+    // 满打满算 30 秒上下；70 秒的安全上限留足余量（平台实测能撑 120 秒以上）。
+    const STREAM_OPTS = { safetyMs: 70000, progressFrames: true };
 
     // ── 流式：老师要边生成边看 ──────────────────────────────
     // 学情分析是一份 1000 字上下的长报告，等它一次性吐完要 20～30 秒。
@@ -85,6 +89,7 @@ export async function onRequestPost(context: any) {
           await recordAiUsage(env, user, "analyze");
           return { status: "ok" };
         },
+        ...STREAM_OPTS,
       });
     }
 

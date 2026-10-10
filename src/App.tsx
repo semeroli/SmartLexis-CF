@@ -35,6 +35,33 @@ import Auth from './components/Auth';
 import AdminDashboard from './components/AdminDashboard';
 import ChangePasswordModal from './components/ChangePasswordModal';
 
+/**
+ * 「正在生成」这句提示语的统一生成器（四处界面共用）。
+ *
+ * 为什么分三段：实测推理型模型会**先构思十几秒到几十秒**才写第一个正文字。
+ * 那段时间如果提示语一直卡在「正在批阅…」，老师看到的就是一个不动的转圈，
+ * 会以为程序死了 —— 而其实模型正在工作。所以中间这段要如实说出来。
+ *
+ *   chars > 0      正文已经出来了 ⇒ 报"已写 N 字"
+ *   thinking > 0   只出了思考过程 ⇒ 报"正在构思（已梳理 N 字）"
+ *   都没有         刚发出请求     ⇒ 只报动作名
+ */
+function streamingLabel(action: string, chars: number, thinking: number, prefix = '已写') {
+  if (chars > 0) return `${action}${prefix} ${chars} 字`;
+  if (thinking > 0) return `AI 正在构思…（已梳理 ${thinking} 字）`;
+  return action;
+}
+
+/**
+ * 同上，但给**按钮**用 —— 按钮位置窄，文案必须短，长了会折行把按钮撑高。
+ * 信息量不能减：正文出来了报字数，只在构思就报"构思中"，两样都没有就报动作名。
+ */
+function buttonLabel(action: string, chars: number, thinking: number, prefix = '已写') {
+  if (chars > 0) return `${action}${prefix} ${chars} 字`;
+  if (thinking > 0) return `构思中…(${thinking} 字)`;
+  return action;
+}
+
 // --- Types ---
 interface Student {
   dbId?: number;
@@ -419,6 +446,10 @@ export default function App() {
   // streamChars 只用于"JSON 类输出"（题目、评分报告）—— 那些正文没法直接看，
   // 就显示"已生成 xxx 字"让老师知道确实在跑。
   const [streamChars, setStreamChars] = useState(0);
+  // thinkingChars：模型正在「思考」时累计的字数。
+  // 实测推理型模型会先思考十几秒到几十秒才写第一个正文字 ——
+  // 那段时间如果不给个动静，界面看起来就是"卡住了"。
+  const [thinkingChars, setThinkingChars] = useState(0);
   const [activeAction, setActiveAction] = useState<'practice' | 'essay' | 'graph' | null>(null);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [actionContent, setActionContent] = useState<string | null>(null);
@@ -809,6 +840,7 @@ export default function App() {
   const generateAIAnalysis = async (student: Student) => {
     setIsGenerating(true);
     setStreamChars(0);
+    setThinkingChars(0);
     // 先置空串而不是 null：置空后界面立刻切到"正在显示"分支，
     // 第一个字一到就能渲染，不会再多一次状态切换。
     setAiPrescription('');
@@ -826,6 +858,7 @@ export default function App() {
             setAiPrescription(full);
             setStreamChars(full.length);
           },
+          onThinking: (n) => setThinkingChars(n),
           // 收尾时以服务端给的最终正文为准：它会顺手剥掉个别模型混进来的"思考过程"
           onDone: (payload) => {
             if (typeof payload?.text === 'string' && payload.text.trim()) {
@@ -891,6 +924,7 @@ export default function App() {
     if (!essayTitle.trim() || !ocrText.trim()) return;
     setIsAnalyzingEssay(true);
     setStreamChars(0);
+    setThinkingChars(0);
     try {
       // 只告诉服务端"要批阅哪个学生"；批阅人是谁、记录归谁，由服务端按令牌决定
       const formData = new FormData();
@@ -908,6 +942,7 @@ export default function App() {
           //   ① 请求全程在传字节，不再"上游闷头算 14 秒"，不容易被平台掐断；
           //   ② 老师能看出确实在跑，而不是怀疑卡死了。
           onDelta: (full) => setStreamChars(full.length),
+          onThinking: (n) => setThinkingChars(n),
           onDone: (payload) => {
             const record = payload?.result;
             if (!record) return;
@@ -981,6 +1016,7 @@ export default function App() {
     setPreGeneratedAudio(null);
     setGoldenSentences([]);
     setStreamChars(0);
+    setThinkingChars(0);
     setActionContent(''); // 立刻切到"流式显示"分支
     try {
       await apiStream(
@@ -1002,6 +1038,7 @@ export default function App() {
             setActionContent(full);
             setStreamChars(full.length);
           },
+          onThinking: (n) => setThinkingChars(n),
           onDone: (payload) => {
             const text = typeof payload?.text === 'string' ? payload.text : '';
             if (text.trim()) applyUpgradedEssay(text);
@@ -1024,6 +1061,7 @@ export default function App() {
     setActiveAction('practice');
     setPracticeData(null);
     setStreamChars(0);
+    setThinkingChars(0);
     try {
       await apiStream(
         '/api/generate_practice?stream=1',
@@ -1037,6 +1075,7 @@ export default function App() {
           //    对老师毫无意义。所以这里**只拿增量算进度**，让老师看出"确实在生成"，
           //    真正的题目等收尾解析完再渲染。
           onDelta: (full) => setStreamChars(full.length),
+          onThinking: (n) => setThinkingChars(n),
           onDone: (payload) => {
             if (payload?.result) setPracticeData(payload.result);
           },
@@ -1843,7 +1882,7 @@ export default function App() {
                             >
                               {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
                               {isAnalyzingEssay
-                                ? streamChars > 0 ? `AI 正在批阅…已输出 ${streamChars} 字` : 'AI 正在批阅…'
+                                ? buttonLabel('AI 正在批阅…', streamChars, thinkingChars, '已输出')
                                 : "② 开始批阅"}
                             </button>
                           </div>
@@ -1897,7 +1936,10 @@ export default function App() {
                       </div>
                       <button onClick={() => generateAIAnalysis(selectedStudent)} disabled={isGenerating} className="shrink-0 whitespace-nowrap px-6 py-3 bg-indigo-600 text-white rounded-[24px] font-black text-sm hover:bg-indigo-700 transition-all flex items-center gap-3 shadow-lg shadow-indigo-200 disabled:opacity-50">
                         {isGenerating ? <Loader2 className="w-5 h-5 animate-spin" /> : <Target className="w-5 h-5" />}
-                        {isGenerating ? "生成中..." : "生成处方"}
+                        {/* ⚠️ 顺序不能反：正文一旦开始出来，就必须切回"已写 N 字"。
+                            真机验证时踩过 —— 写成 thinkingChars 优先的话，
+                            正文都写了一千字了，按钮还停在"构思中"，反而误导老师。 */}
+                        {isGenerating ? buttonLabel('生成中…', streamChars, thinkingChars) : '生成处方'}
                       </button>
                     </div>
                     <div className="prose prose-sm max-w-none text-slate-700 leading-loose min-h-[120px]">
@@ -1907,7 +1949,7 @@ export default function App() {
                           {isGenerating && (
                             <div className="flex items-center gap-3 pt-4 text-xs font-bold text-indigo-500">
                               <Loader2 className="w-4 h-4 animate-spin" />
-                              正在生成…已写 {aiPrescription.length} 字
+                              {streamingLabel('正在生成…', aiPrescription.length, 0)}
                             </div>
                           )}
                         </>
@@ -1925,7 +1967,7 @@ export default function App() {
                     <button onClick={fetchPractice} disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
                       {isActionLoading && activeAction === 'practice' ? <Loader2 className="w-6 h-6 animate-spin" /> : <BookOpen className="w-6 h-6" />}
                       {isActionLoading && activeAction === 'practice'
-                        ? (streamChars > 0 ? `AI 正在出题…已输出 ${streamChars} 字` : 'AI 正在出题…')
+                        ? buttonLabel('AI 正在出题…', streamChars, thinkingChars, '已输出')
                         : '开始专项练习'}
                     </button>
                     {practiceData && <InteractivePractice data={practiceData} />}
@@ -1935,7 +1977,7 @@ export default function App() {
                     <button onClick={fetchUpgradedEssay} disabled={isActionLoading || !essayAnalysis} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
                       {isActionLoading && activeAction === 'essay' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
                       {isActionLoading && activeAction === 'essay'
-                        ? (streamChars > 0 ? `AI 正在写范文…已写 ${streamChars} 字` : 'AI 正在写范文…')
+                        ? buttonLabel('AI 正在写范文…', streamChars, thinkingChars)
                         : '生成升格范文'}
                     </button>
                     {actionContent && (

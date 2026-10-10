@@ -148,13 +148,18 @@ export async function onRequestPost(context: any) {
       { role: "user", content: parts.join("\n") },
     ];
 
-    // 单模型 18 秒、整条链 30 秒。
     // 2026-10-10 线上实测（公开体检接口打同一模型/同一平台）：
     //   评分 JSON（约 416 字）→ Qwen3.8-Flash-Next 13.9 秒
     //   评分 JSON（约 629 字）→ DeepSeek-V4.1-Flash 13.4 秒
-    // 所以单模型超时给 18 秒（留 4 秒余量），30 秒总预算还能让第二个模型
-    // 再试 12 秒。⚠️ 别再压到 15 秒 —— 那点余量不够，会把本来能成的请求掐掉。
+    //
+    // ⚠️ 2026-10-10 起语义变了：`timeoutMs` 从此只管**握手**
+    //（多久之内必须把流开起来，开不起来就快速换下一个模型），
+    // 不再限制正文能写多久 —— 那由流式转发层的 safetyMs / stallMs 管。
+    // 原因：实测同一个模型两次可以差 7 倍（首字 8.2 秒 vs 61.6 秒），
+    // 拿总时长判生死只会误杀"慢但正常"的生成。
     const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 30000 };
+    // 这个接口出的是短 JSON（几百字），45 秒的安全上限绰绰有余。
+    const STREAM_OPTS = { safetyMs: 45000, progressFrames: true };
 
     /**
      * 从模型回答里把 JSON「抠」出来、校验、落库，最后拼出前端要的记录。
@@ -273,6 +278,7 @@ export async function onRequestPost(context: any) {
       console.log(`作文阅卷（流式）使用模型: ${hs.model}`);
       return pipeAiStream(hs.response, hs.model, {
         onComplete: async (full) => ({ result: await finalizeEssayResult(full) }),
+        ...STREAM_OPTS,
       });
     }
 

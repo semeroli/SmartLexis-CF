@@ -62,13 +62,18 @@ ${content}
       { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
       { role: "user", content: prompt },
     ];
-    // 这个接口产出最长（整篇升格范文，maxTokens 3500），所以单模型给到 22 秒。
+    // 握手 22 秒（这个接口提示词最长，模型受理得慢一点），总预算 31 秒。
     const AI_OPTS = { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 31000 };
+    // 四个接口里产出最长（整篇升格范文，2000～2800 字），安全上限给到 90 秒。
+    // 实测出字速度约 90～110 字/秒，2800 字约 25～30 秒，加上开头思考几秒 ——
+    // 90 秒是给"平台那天特别慢"留的余量（平台本身实测能撑 120 秒以上）。
+    const STREAM_OPTS = { safetyMs: 90000, progressFrames: true };
 
     // ── 流式：这个功能产出 2000～2800 字，是四个里最长的 ────────
-    // 按实测 30～45 字/秒，一次吐完要 50 秒以上 —— **远超平台单请求上限**，
-    // 所以它其实早就该改流式了。改成流式后，第一句话 1～2 秒就出现，
-    // 老师可以边看边读，不用盯着转圈等一分钟。
+    // 它其实早就该改流式了：一次性返回要等 30～50 秒，老师只能对着转圈等。
+    // 改成流式后开头几秒就能看见字。⚠️ 注意：这里**不是**靠"突破平台上限"，
+    // 那个上限经实测在普通请求上也不存在（62.8 秒的普通 JSON 请求照样返回）；
+    // 真正的收益是**等待感消失**，以及长文不再被我们自己的预算掐断。
     if (wantsStream(request)) {
       const hs = await callModelscopeStream(env, "text", messages, AI_OPTS);
       console.log(`作文升格（流式）使用模型: ${hs.model}`);
@@ -78,6 +83,7 @@ ${content}
           await recordAiUsage(env, user, "upgrade");
           return {};
         },
+        ...STREAM_OPTS,
       });
     }
 

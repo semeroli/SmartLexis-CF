@@ -962,6 +962,12 @@ export interface AiStreamHandshake {
 const STREAM_SAFETY_MS = 60000;
 
 /**
+ * 停滞检测的默认阈值：多久没有任何新内容就算卡死。
+ * 见 pipeAiStream 的 stallMs 注释 —— 判据是"没有新内容"，不是"总时长"。
+ */
+const STREAM_STALL_MS = 45000;
+
+/**
  * 和 callModelscope 用**同一条候选链、同一套超时预算**，唯一区别是 `stream: true`。
  * 返回还没被读过的上游响应；全部候选都失败时抛 HttpError(502)。
  *
@@ -1025,9 +1031,18 @@ export async function callModelscopeStream(
         }),
         signal: controller.signal,
       });
-      // ⚠️ 这里**不能** clearTimeout：定时器要陪着整个流走完，
-      //    否则上游开流之后就不受控了，可能挂着不动直到平台掐断。
-      //    真正的清理在返回的流收尾时做（见 consumeUpstream）。
+      // 🔴 2026-10-10 修正：这里**要** clearTimeout，但只在真的开流成功之后。
+      //
+      // 原来刻意不清，是想让定时器"陪着整个流走完"，防上游挂着不动。
+      // 那个担心是对的，但解法用错了：定时器管的是**总时长**，
+      // 而一个正常的长文生成本来就该跑 40～90 秒 —— 实测同一个模型两次
+      // 可以差 7 倍（首字 8.2 秒 vs 61.6 秒），拿"总时长"去判生死，
+      // 只会把"慢但正常"的生成当成故障掐掉。
+      //
+      // 正确的判据是「**多久没有新内容**」。这个改由 pipeAiStream 的停滞检测负责
+      // （见 stallMs）：正文或思考增量一到就算"还活着"，纯卡死才中止。
+      // 所以这里的 timer 从此只负责一件事：**多久之内必须把流开起来**（握手）。
+      // 开起来了就交给停滞检测，没开起来就快速换下一个模型 —— 这也让降级链重新有意义。
       if (!res.ok) {
         clearTimeout(timer);
         const note = (await res.text().catch(() => "")).slice(0, 240).replace(/\s+/g, " ");
@@ -1044,8 +1059,14 @@ export async function callModelscopeStream(
       }
 
       lastGoodModel[kind] = model;
-      // 把中止控制器挂在 response 上带出去，由转发层负责 clearTimeout
-      (res as any).__slAbortTimer = timer;
+
+      // 开流成功 ⇒ 握手定时器使命结束。剩下的时长由停滞检测管
+      //（正文/思考一断超过 stallMs 才算卡死），所以慢而正常的长文不会被误杀。
+      clearTimeout(timer);
+
+      // 中止控制器仍挂在 response 上带出去：停滞检测和 safetyMs 都要靠它
+      // 把上游那一枪真的掐掉，否则流会一直在后面跑、白烧额度。
+      (res as any).__slAbortTimer = null;
       (res as any).__slController = controller;
       return { response: res, model, attempts };
     } catch (e: any) {
@@ -1157,6 +1178,18 @@ export function pipeAiStream(
      * （只报字数、不下发原文），前端就能显示"正在思考…（已思考 N 字）"。
      */
     progressFrames?: boolean;
+    /**
+     * 停滞检测：多久**没有任何新内容**就判定卡死并中止（毫秒）。
+     *
+     * 为什么用"没有新内容"而不是"总时长"：
+     *   实测同一个模型两次差 7 倍（同一提示词，首字 8.2 秒 vs 61.6 秒），
+     *   一个正常的长文生成也可能跑 40～90 秒。拿总时长判生死，只会误杀慢而正常的生成。
+     *   反过来，只要它还在出正文或思考，就说明活着，不该打断。
+     *
+     * 默认 45 秒：比实测最坏的一次空窗（约 54 秒的纯思考期，但那期间有思考增量在流，
+     * 属于"有内容"）留足余量；真的一个字都没有 45 秒，那就是死了。
+     */
+    stallMs?: number;
   }
 ): Response {
   const timer = (upstream as any).__slAbortTimer;
@@ -1182,6 +1215,23 @@ export function pipeAiStream(
         send({ type: "error", message: "生成时间过长已中止，请重试一次" });
         close();
       }, safetyMs);
+
+      // 停滞检测：只看"距上次有新内容过了多久"，不看总时长。
+      // 正文增量和思考增量都算"还活着" —— 推理型模型会先长时间吐思考，
+      // 那段时间老师虽然看不到正文字，但连接是活的。
+      const stallMs = opts.stallMs && opts.stallMs > 0 ? opts.stallMs : STREAM_STALL_MS;
+      let lastActivityAt = t0Stream;
+      const stallTimer = setInterval(() => {
+        if (closed) return;
+        if (Date.now() - lastActivityAt < stallMs) return;
+        try { abortController?.abort(); } catch (_) {}
+        clearInterval(stallTimer);
+        send({
+          type: "error",
+          message: `AI 已 ${Math.round(stallMs / 1000)} 秒没有任何新内容，已中止，请重试一次`,
+        });
+        close();
+      }, 2000);
 
       try {
         send({ type: "meta", model });
@@ -1220,11 +1270,15 @@ export function pipeAiStream(
                 choice?.message?.reasoning_content ??
                 ""
             );
-            if (think) reasoningChars += think.length;
+            if (think) {
+              reasoningChars += think.length;
+              lastActivityAt = Date.now();
+            }
 
             const piece = String(choice?.delta?.content ?? choice?.message?.content ?? "");
             if (piece) {
               full += piece;
+              lastActivityAt = Date.now();
               send({ type: "delta", text: piece });
             } else if (opts.progressFrames && reasoningChars) {
               const now = Date.now();
@@ -1268,6 +1322,7 @@ export function pipeAiStream(
         send({ type: "error", message: msg });
       } finally {
         clearTimeout(hardStop);
+        clearInterval(stallTimer);
         if (timer) clearTimeout(timer);
         close();
       }
