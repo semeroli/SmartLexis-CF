@@ -62,6 +62,112 @@ function buttonLabel(action: string, chars: number, thinking: number, prefix = '
   return action;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 「本机朗读」的三个零件（2026-10-10）
+// ═══════════════════════════════════════════════════════════════
+// 背景：朗读范文原来走服务端（Gemini 语音合成），但 GEMINI_API_KEY 一直没配，
+// 而且 Gemini 需要能连通 Google 的网络 —— 国内基本用不了。
+// 所以**本机朗读才是主力**，服务端那条只是"配了就用、音色更好"的加分项。
+//
+// 原来的兜底写法有三个坑，实测全踩到了（老师反馈"朗读范文不行"就是这个）：
+//   ① 不指定 voice          → Chrome 可能选中「Google 普通话」，那是**联网语音**，
+//                             国内网络下它不报错、也不出声，就那样静默地什么都不发生；
+//   ② cancel() 后同步 speak() → Chrome 会把这次朗读整个吞掉（同样不报错、不出声）；
+//   ③ 整篇一次塞进去        → 长文会被 Chrome 中途掐断，读一半停了。
+// 下面的三个函数就是逐条对着修的。
+
+/** 按句子切块。整篇一次性读会被 Chrome 掐断，必须拆成短句排队读。 */
+function chunkForSpeech(text: string, maxLen = 110): string[] {
+  const parts = text.match(/[^。！？；!?;\n]+[。！？；!?;\n]?/g) || [text];
+  const out: string[] = [];
+  let cur = '';
+  for (const p of parts) {
+    if (cur && (cur + p).length > maxLen) { out.push(cur); cur = p; }
+    else cur += p;
+  }
+  if (cur.trim()) out.push(cur);
+  return out.length ? out : [text];
+}
+
+/**
+ * 挑一个中文语音。
+ * **必须优先「本地语音」(localService === true)**：微软的慧慧/康康/瑶瑶是系统自带的，
+ * 离线可用；叫「Google 普通话」的那个是联网语音，国内网络下会静默失败。
+ */
+function pickChineseVoice(): SpeechSynthesisVoice | null {
+  const ss = typeof window !== 'undefined' ? window.speechSynthesis : null;
+  if (!ss) return null;
+  const all = ss.getVoices() || [];
+  const zh = all.filter(v => /^zh\b|^zh-/i.test(v.lang || '') || /中文|普通话|国语|汉语/i.test(v.name || ''));
+  if (!zh.length) return null;
+  const local = zh.filter(v => v.localService);
+  const pool = local.length ? local : zh;
+  return (
+    pool.find(v => /Huihui|Kangkang|Yaoyao|Xiaoxiao|Xiaoyi|Yunxi|Yunyang|Hanhan/i.test(v.name || '')) ||
+    pool.find(v => !/Google/i.test(v.name || '')) ||
+    pool[0]
+  );
+}
+
+/** getVoices() 首次调用常常返回空数组（列表还没加载完），要等 voiceschanged 事件。 */
+function waitForVoices(timeoutMs = 1500): Promise<SpeechSynthesisVoice[]> {
+  return new Promise((resolve) => {
+    const ss = typeof window !== 'undefined' ? window.speechSynthesis : null;
+    if (!ss) return resolve([]);
+    const now = ss.getVoices() || [];
+    if (now.length) return resolve(now);
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { ss.onvoiceschanged = null; } catch (_) {}
+      resolve(ss.getVoices() || []);
+    };
+    try { ss.onvoiceschanged = finish; } catch (_) {}
+    if (typeof ss.addEventListener === 'function') ss.addEventListener('voiceschanged', finish);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+/** 把语音引擎的英文错误码翻成老师能看懂的话。 */
+function speechErrorMessage(code: string): string {
+  const map: Record<string, string> = {
+    'not-allowed': '浏览器没允许发声，请再点一次「朗读范文」',
+    'synthesis-failed': '本机语音引擎启动失败（多半是选到了需要联网的语音）',
+    'audio-busy': '音频设备被占用，请先关掉其他正在播放声音的页面',
+    'audio-hardware': '没检测到可用的音箱或耳机',
+    'network': '这条语音需要联网，但当前网络不可用',
+    'language-unavailable': '系统里没有中文语音包',
+    'voice-unavailable': '选中的语音不可用',
+    'interrupted': '朗读被打断',
+    'canceled': '朗读已取消',
+  };
+  return map[code] || `语音引擎报错（${code || '未知'}）`;
+}
+
+/**
+ * 从升格输出里抽出**只该朗读的那一段**：范文本身。
+ *
+ * 为什么要单独抽一个函数：原来 playTTS / preGenerateTTS 各写一份一样的正则，而
+ * 那三个正则只认 `【升格范文】` 这种带方括号的**原始**标记；可是页面上显示的
+ * `actionContent` 是「### 升格范文 + ### 亮点解析」拼出来的，一个都匹配不上，
+ * 于是退化成"从'升格范文'四个字往后全念" —— 老师会把「亮点解析」也听一遍。
+ * 本地实测：总共念了 843 字，而范文只有 500 出头。
+ */
+function extractEssayText(text: string): string {
+  const pick = (re: RegExp): string | null => {
+    const m = text.match(re);
+    return m && m[1] && m[1].trim().length > 10 ? m[1].trim() : null;
+  };
+  const out =
+    pick(/【升格范文】([\s\S]*?)(?=【亮点解析】|【亮点赏析】|【金句推荐】|【|$)/) ??
+    pick(/(?:^|\n)\s*(?:#{1,6}\s*)?升格范文[^\n]*\n([\s\S]*?)(?=\n\s*(?:#{1,6}\s*)?(?:亮点解析|亮点赏析|金句推荐)|$)/) ??
+    pick(/范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/) ??
+    (text.includes('升格范文') ? text.slice(text.indexOf('升格范文') + 4) : text);
+  // 兜底：不管走哪条路，「亮点解析 / 金句推荐」都只该给眼睛看，不念出来
+  return out.split(/亮点解析|亮点赏析|金句推荐/)[0].replace(/[#*`]/g, '').trim();
+}
+
 // --- Types ---
 interface Student {
   dbId?: number;
@@ -152,8 +258,10 @@ interface WritingMaterial {
 }
 
 // --- UI Components ---
-const Card = ({ title, subtitle, children, className, delay = 0 }: any) => (
+// id 只用来给"引导滚动 + 高亮"定位卡片（见「智能学习处方」那张卡）。
+const Card = ({ title, subtitle, children, className, delay = 0, id }: any) => (
   <motion.div
+    id={id}
     initial={{ opacity: 0, y: 20 }}
     animate={{ opacity: 1, y: 0 }}
     transition={{ duration: 0.5, delay }}
@@ -440,6 +548,15 @@ export default function App() {
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [aiPrescription, setAiPrescription] = useState<string | null>(null);
+  // 学情分析这一趟是不是**失败**收场的。
+  // ⚠️ 以前是拿 `aiPrescription.includes("失败")` 现算的 —— 那是个全文匹配：
+  //    报告正文里只要正常出现"失败"二字（比如老师常看到的"失分/失败原因分析"），
+  //    「开始专项练习」就会被**永久**禁用（按钮变灰且不给任何提示）。
+  //    2026-10-10 本地实测确认了这个机制，所以改成由 catch 分支显式置位。
+  const [analysisFailed, setAnalysisFailed] = useState(false);
+  // 「开始专项练习」需要一份学习处方才出得了题。没处方时点了会被引导到这里，
+  // 把处方卡高亮一下，让老师一眼看到该点哪儿。
+  const [rxNudge, setRxNudge] = useState(false);
   // ── 「边生成边显示」（2026-10-10）────────────────────────────
   // 免费模型只有 30～45 字/秒，长文（学情分析 / 专项练习 / 升格范文）等它一次吐完
   // 要 30～60 秒，还顶着平台单请求上限。改成流式后文字一点点出来，等待感基本消失。
@@ -477,6 +594,12 @@ export default function App() {
   const [isTTSLoading, setIsTTSLoading] = useState(false);
   const [preGeneratedAudio, setPreGeneratedAudio] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // 服务端语音合成（Gemini）确认不可用时置位。置位后本次会话不再去请求它 ——
+  // 免得每点一次朗读就白跑一个必然失败的请求（老师看到控制台一片红会以为程序坏了）。
+  const serverTtsOffRef = useRef(false);
+  // 老师按「停止朗读」时置位，用来把"用户主动停"和"真报错"区分开：
+  // 主动停止时语音引擎也会回调 onerror('interrupted')，那不算失败。
+  const ttsStopRef = useRef(false);
 
   // 启动时校验本地登录态：令牌有效才认，并且身份以服务端返回的为准。
   // 只看 localStorage 是不算数的——那里面用户能自己改。
@@ -837,10 +960,25 @@ export default function App() {
     id: 'N/A', name: '未选择', choice: 0, modernReading: 0, classicReading: 0, nonLinear: 0, dictation: 0, composition: 0, total: 0
   };
 
+  // 「开始专项练习」出题要拿处方里的薄弱点当依据，所以先得有处方。
+  // ⚠️ 判据是「有正文且不是失败收场」，**不再**对正文做 "失败" 关键词匹配 ——
+  //    见 analysisFailed 的注释。
+  const hasPrescription = !!aiPrescription && aiPrescription.trim().length > 0 && !analysisFailed;
+
+  /** 把页面滚到「智能学习处方」卡并闪一下 —— 老师点错了地方时，直接告诉他该点哪儿。 */
+  const nudgeToPrescription = () => {
+    try {
+      document.getElementById('ai-prescription-card')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (_) { /* 滚动失败不影响主流程 */ }
+    setRxNudge(true);
+    window.setTimeout(() => setRxNudge(false), 2200);
+  };
+
   const generateAIAnalysis = async (student: Student) => {
     setIsGenerating(true);
     setStreamChars(0);
     setThinkingChars(0);
+    setAnalysisFailed(false);
     // 先置空串而不是 null：置空后界面立刻切到"正在显示"分支，
     // 第一个字一到就能渲染，不会再多一次状态切换。
     setAiPrescription('');
@@ -869,6 +1007,7 @@ export default function App() {
       );
     } catch (err: any) {
       console.error('AI Analysis Error:', err);
+      setAnalysisFailed(true);
       setAiPrescription('分析失败: ' + err.message);
     } finally {
       setIsGenerating(false);
@@ -1053,8 +1192,18 @@ export default function App() {
   };
 
   const fetchPractice = async () => {
-    if (!aiPrescription || aiPrescription.includes("失败")) {
-      alert("请先生成有效的智能学习处方，再进行专项练习。");
+    if (!hasPrescription) {
+      // ⚠️ 这里以前是 `alert(...); return;`，但按钮同时被 `disabled` 挡着 ——
+      //    禁用的按钮根本不会触发 onClick，所以老师看到的是「点了完全没反应」，
+      //    连这句提示都弹不出来（2026-10-10 本地实测确认）。
+      //    现在按钮不再禁用，改成"点了就明确告诉你下一步做什么"。
+      alert(
+        analysisFailed
+          ? "上一次学情分析没有成功，先重新点「生成处方」拿到有效的学习处方，再开始专项练习。"
+          : "专项练习是按这个学生的薄弱点出题的，得先有一份学习处方。\n\n" +
+            "请点上方「智能学习处方」卡右上角的『生成处方』，生成完再回来点这里。"
+      );
+      nudgeToPrescription();
       return;
     }
     setIsActionLoading(true);
@@ -1090,31 +1239,7 @@ export default function App() {
 
   // ✅ 预生成 TTS 音频（升格范文）
   const preGenerateTTS = async (text: string) => {
-    let textToRead = text;
-    const patterns = [
-      /【升格范文】([\s\S]*?)(?=【亮点解析】|【亮点赏析】|【|$)/,
-      /(?:^|\n)升格范文(?:$|\n)([\s\S]*?)(?=(?:^|\n)亮点解析|$)/m,
-      /范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/
-    ];
-
-    let found = false;
-    for (const pattern of patterns) {
-      const match = text.match(pattern);
-      if (match && match[1] && match[1].trim().length > 10) {
-        textToRead = match[1].trim();
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      const markerIndex = text.indexOf('升格范文');
-      if (markerIndex !== -1) {
-        textToRead = text.substring(markerIndex + 4).trim();
-      }
-    }
-
-    textToRead = textToRead.replace(/[#*`]/g, '').substring(0, 2000);
+    const textToRead = extractEssayText(text).substring(0, 2000);
 
     try {
       const res = await apiFetch('/api/tts', {
@@ -1127,19 +1252,80 @@ export default function App() {
         const data = await res.json();
         if (data.audio) {
           setPreGeneratedAudio(data.audio);
+        } else if (data.configured === false) {
+          // 服务端没配语音合成 —— 记下来，点「朗读范文」时直接走本机朗读
+          serverTtsOffRef.current = true;
         }
+      } else {
+        serverTtsOffRef.current = true;
       }
     } catch (err) {
       console.error("语音预生成失败:", err);
     }
   };
 
-  // ✅ 新增：浏览器 TTS 降级兜底
-  const playTTS = async (text: string, skipExtract = false) => {
-    if (isPlayingAudio) {
-      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+  /**
+   * 本机朗读（主力方案）。三处关键点，逐条都是实测踩出来的：
+   *   ① 显式挑**本地**中文语音 —— 不指定 voice 时 Chrome 可能选中「Google 普通话」，
+   *      那是联网语音，国内网络下不报错也不出声（静默失败）；
+   *   ② cancel() 之后要让出一次事件循环再 speak()，否则这次朗读会被整个吞掉；
+   *   ③ 长文按句切块排队 —— 整篇塞进一条 utterance 会被 Chrome 中途掐断。
+   * 失败时抛带中文说明的错误，由调用方弹给老师（不再静默）。
+   */
+  const speakWithBrowser = async (text: string) => {
+    const ss = typeof window !== 'undefined' ? window.speechSynthesis : null;
+    if (!ss) throw new Error('这个浏览器不支持语音朗读，建议改用 Chrome 或 Edge');
+
+    await waitForVoices();
+    const voice = pickChineseVoice();
+
+    ss.cancel();
+    await new Promise(r => setTimeout(r, 120)); // 见 ②
+    ttsStopRef.current = false;
+
+    const chunks = chunkForSpeech(text);
+    setIsPlayingAudio(true);
+
+    // Chrome 的长朗读会在十几秒后自己"睡着"（paused=true 但不结束）。
+    // 我们这只按钮是「停止朗读」、没有暂停功能，所以只要发现它自己睡着了就唤醒。
+    const watchdog = window.setInterval(() => {
+      if (!ttsStopRef.current && ss.speaking && ss.paused) ss.resume();
+    }, 4000);
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let i = 0;
+        const next = () => {
+          if (ttsStopRef.current || i >= chunks.length) return resolve();
+          const u = new SpeechSynthesisUtterance(chunks[i++]);
+          u.lang = 'zh-CN';
+          u.rate = 0.95;
+          u.pitch = 1.0;
+          if (voice) u.voice = voice;
+          u.onend = next;
+          u.onerror = (e: any) => {
+            const code = e?.error || 'unknown';
+            // 老师主动按「停止朗读」时也会回调 onerror('interrupted')，那不算失败
+            if (ttsStopRef.current || code === 'interrupted' || code === 'canceled') return resolve();
+            reject(new Error(speechErrorMessage(code)));
+          };
+          ss.speak(u);
+        };
+        next();
+      });
+    } finally {
+      window.clearInterval(watchdog);
       setIsPlayingAudio(false);
+    }
+  };
+
+  const playTTS = async (text: string, skipExtract = false) => {
+    // 正在朗读 → 再点一次是「停止」
+    if (isPlayingAudio) {
+      ttsStopRef.current = true;
+      if (audioRef.current) { try { audioRef.current.pause(); } catch (_) {} audioRef.current = null; }
       window.speechSynthesis?.cancel();
+      setIsPlayingAudio(false);
       return;
     }
 
@@ -1152,70 +1338,45 @@ export default function App() {
     let textToRead = text;
 
     if (!skipExtract) {
-      const patterns = [
-        /【升格范文】([\s\S]*?)(?=【亮点解析】|【亮点赏析】|【|$)/,
-        /(?:^|\n)升格范文(?:$|\n)([\s\S]*?)(?=(?:^|\n)亮点解析|$)/m,
-        /范文正文([\s\S]*?)(?=亮点解析|解析|【|$)/
-      ];
-
-      let found = false;
-      for (const pattern of patterns) {
-        const match = text.match(pattern);
-        if (match && match[1] && match[1].trim().length > 10) {
-          textToRead = match[1].trim();
-          found = true;
-          break;
-        }
-      }
-
-      if (!found) {
-        const markerIndex = text.indexOf('升格范文');
-        if (markerIndex !== -1) {
-          textToRead = text.substring(markerIndex + 4).trim();
-        }
-      }
+      textToRead = extractEssayText(text);
     }
 
-    textToRead = textToRead.replace(/[#*`]/g, '').substring(0, 2000);
+    textToRead = textToRead.replace(/[#*`]/g, '').trim().substring(0, 2000);
 
     try {
-      const res = await apiFetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: textToRead })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ error: "播放失败 (服务器错误)" }));
-        throw new Error(errorData.error || `HTTP ${res.status}`);
+      // ① 服务端语音（配了 GEMINI_API_KEY 才有，音色更好）。
+      //    没配就安静地跳过 —— 不再每次都发一个必然失败的请求，
+      //    也不再往控制台刷红色报错让老师以为程序坏了。
+      if (!serverTtsOffRef.current) {
+        try {
+          const res = await apiFetch('/api/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: textToRead })
+          });
+          const data = await res.json().catch(() => null);
+          if (data?.audio) {
+            playAudioFromBase64(data.audio);
+            return;
+          }
+          if (data?.configured === false) serverTtsOffRef.current = true;
+          if (!res.ok) serverTtsOffRef.current = true;
+        } catch (err: any) {
+          // 网络层失败：记下来，本次会话不再重试，直接走本机朗读
+          console.info("服务端语音不可用，改用本机朗读:", err?.message || err);
+          serverTtsOffRef.current = true;
+        }
       }
 
-      const data = await res.json();
-      if (data.audio) {
-        playAudioFromBase64(data.audio);
-      } else {
-        throw new Error("未能生成音频数据");
-      }
+      // ② 本机朗读兜底（主力）
+      await speakWithBrowser(textToRead);
     } catch (err: any) {
-      console.warn("Gemini TTS 失败，降级使用浏览器朗读:", err.message);
-      // ✅ 降级：使用浏览器原生 SpeechSynthesis
-      try {
-        if (!window.speechSynthesis) throw new Error("浏览器不支持语音合成");
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(textToRead);
-        utterance.lang = 'zh-CN';
-        utterance.rate = 0.9;
-        utterance.pitch = 1.0;
-        utterance.onstart = () => setIsPlayingAudio(true);
-        utterance.onend = () => setIsPlayingAudio(false);
-        utterance.onerror = () => setIsPlayingAudio(false);
-        window.speechSynthesis.speak(utterance);
-      } catch (fallbackErr: any) {
-        console.error("浏览器 TTS 降级也失败:", fallbackErr);
-        alert(`播放失败: ${err.message}`);
-      }
+      // ⚠️ 这里必须报出来。原来的降级是**静默失败** —— 语音引擎报错只写进 console，
+      //    老师点了按钮、没声音、也没提示，只知道"朗读范文不行"。
+      alert(`朗读失败：${err?.message || err}\n\n提示：可在系统「设置 → 时间和语言 → 语音」里确认已安装中文语音包。`);
+    } finally {
+      setIsTTSLoading(false);
     }
-    finally { setIsTTSLoading(false); }
   };
 
   // ✅ 使用 AudioContext 解码播放（替代手动 WAV 头）
@@ -1928,7 +2089,15 @@ export default function App() {
                     </div>
                   </Card>
 
-                  <Card className="md:col-span-3 lg:col-span-1 bg-indigo-50/30 border-indigo-100/50" delay={0.2}>
+                  <Card
+                    id="ai-prescription-card"
+                    className={cn(
+                      "md:col-span-3 lg:col-span-1 bg-indigo-50/30 border-indigo-100/50 transition-shadow duration-500",
+                      // 「专项练习」缺处方时，老师会被引导到这里 —— 闪一圈光圈指个路
+                      rxNudge && "ring-4 ring-indigo-400/60 shadow-xl shadow-indigo-200"
+                    )}
+                    delay={0.2}
+                  >
                     <div className="flex flex-wrap items-center justify-between gap-4 mb-8">
                       <div className="flex items-center gap-4 min-w-0">
                         <div className="w-12 h-12 bg-indigo-100 rounded-[20px] flex items-center justify-center"><BrainCircuit className="w-6 h-6 text-indigo-600" /></div>
@@ -1964,22 +2133,39 @@ export default function App() {
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                   <Card title="🚀 专项提分练习" subtitle="巩固薄弱知识点" delay={0.3}>
-                    <button onClick={fetchPractice} disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
+                    {/* ⚠️ 这里过去是 `disabled={isActionLoading || !aiPrescription || aiPrescription.includes("失败")}`。
+                        禁用的按钮**不会触发 onClick**，所以老师点了以后连提示都弹不出来，
+                        看到的正是「点击按键后无反应」（2026-10-10 实测确认）。
+                        现在只在"正在生成"时才禁用；缺处方由 fetchPractice 明确告知并指路。 */}
+                    <button onClick={fetchPractice} disabled={isActionLoading} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-[24px] font-black text-lg hover:from-indigo-700 hover:to-purple-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-indigo-200 disabled:opacity-50">
                       {isActionLoading && activeAction === 'practice' ? <Loader2 className="w-6 h-6 animate-spin" /> : <BookOpen className="w-6 h-6" />}
                       {isActionLoading && activeAction === 'practice'
                         ? buttonLabel('AI 正在出题…', streamChars, thinkingChars, '已输出')
                         : '开始专项练习'}
                     </button>
+                    {!hasPrescription && !(isActionLoading && activeAction === 'practice') && (
+                      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 text-center">
+                        {analysisFailed
+                          ? '上次学情分析没成功 —— 请先重新点上方「智能学习处方」里的「生成处方」。'
+                          : <>这份练习按学生的薄弱点出题，请先点上方「智能学习处方」卡里的 <strong className="text-indigo-600">「生成处方」</strong>。</>}
+                      </p>
+                    )}
                     {practiceData && <InteractivePractice data={practiceData} />}
                   </Card>
 
                   <Card title="📖 范文升格赏析" subtitle="AI 生成升格范文与金句" delay={0.4}>
-                    <button onClick={fetchUpgradedEssay} disabled={isActionLoading || !essayAnalysis} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
+                    {/* 同上：把"没批阅过作文"的静默禁用改成点击后明确提示（守卫在 fetchUpgradedEssay 里已有） */}
+                    <button onClick={fetchUpgradedEssay} disabled={isActionLoading} className="w-full py-5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-[24px] font-black text-lg hover:from-emerald-700 hover:to-teal-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50">
                       {isActionLoading && activeAction === 'essay' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
                       {isActionLoading && activeAction === 'essay'
                         ? buttonLabel('AI 正在写范文…', streamChars, thinkingChars)
                         : '生成升格范文'}
                     </button>
+                    {!essayAnalysis && !(isActionLoading && activeAction === 'essay') && (
+                      <p className="mt-3 text-[11px] leading-relaxed text-slate-500 text-center">
+                        升格要基于原文改，请先在左边「AI 作文深度诊断」里上传作文并完成批阅。
+                      </p>
+                    )}
                     {actionContent && (
                       <div className="mt-8 space-y-6">
                         <div className="flex items-center justify-between">
