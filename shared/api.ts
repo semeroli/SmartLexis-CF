@@ -293,6 +293,7 @@ export async function assertStudentAccess(env: any, user: AuthUser, studentId: s
 /** 各类接口的每日上限（按用户）。设 0 或负数 = 该类不限制。 */
 export const AI_DAILY_LIMITS: Record<string, number> = {
   essay: 60,     // 作文阅卷：多模态、单次最贵
+  ocr: 120,      // 作文「只认字」：拆两步后的第一步，单次比阅卷便宜得多
   analyze: 80,   // 学情分析
   practice: 60,  // 专项练习
   upgrade: 60,   // 作文升格
@@ -301,6 +302,7 @@ export const AI_DAILY_LIMITS: Record<string, number> = {
 
 const AI_KIND_LABEL: Record<string, string> = {
   essay: "作文阅卷",
+  ocr: "作文识别",
   analyze: "学情分析",
   practice: "专项练习",
   upgrade: "作文升格",
@@ -483,6 +485,71 @@ export function essayReportFromRow(row: any): string {
   return typeof row?.analysis === "string" ? row.analysis : "";
 }
 
+// ─────────────────────────────────────────────────────────────
+// 作文「只认字」这一步的输出解析
+//
+// 为什么要单独写一个解析函数、还不用 JSON：
+//   这一步的输出主体是**整篇作文原文**（八百到一千字，里面必然有换行、
+//   引号、顿号）。让模型把它塞进 JSON 字符串里，就得转义所有换行和引号 ——
+//   实测这种长文本最容易出两种事：转义写错（JSON 解析失败）、或者被长度
+//   上限截断在半句（JSON 必然不完整）。一旦解析失败，整篇原文就白认了。
+//
+//   所以改用**分隔符**：让模型按固定标记分成两段，我们按标记切。
+//   即使它话多了几句、标记样式略有出入，也还能救回来。
+// ─────────────────────────────────────────────────────────────
+
+export interface OcrResult {
+  text: string;
+  handwriting: string;
+}
+
+/** 把各种可能写歪的标记都算上：===原文===、【原文】、## 原文、原文： */
+function ocrMarker(word: string): RegExp {
+  return new RegExp(`(?:^|\\n)[\\s>#*=\\[【]*\\s*${word}\\s*[\\]】=*\\s]*(?:\\n|$)`, "m");
+}
+
+export function parseOcrOutput(raw: string): OcrResult {
+  let s = String(raw || "").trim();
+  if (!s) return { text: "", handwriting: "" };
+
+  // 模型爱套一层 ``` 代码块
+  const fence = s.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i);
+  if (fence && fence[1].trim()) s = fence[1].trim();
+
+  // 去掉开头的客套话（"好的，以下是转写结果："）
+  s = s.replace(/^(好的|好)[，,。]?[^\n]{0,30}?[:：]\s*\n?/, "").trim();
+
+  const mText = ocrMarker("(?:原文|作文原文|正文|转写原文)").exec(s);
+  let text = "";
+  let before = s;
+
+  if (mText) {
+    text = s.slice(mText.index + mText[0].length).trim();
+    before = s.slice(0, mText.index);
+  } else {
+    // 找不到"原文"标记：整段都当原文（宁可多带一点，也不能把原文丢了）
+    text = s;
+    before = "";
+  }
+
+  // 卷面描述：取"卷面"标记之后、原文标记之前的那一小段
+  let handwriting = "";
+  const mHw = ocrMarker("(?:卷面|卷面情况|卷面书写|书写情况|字迹)").exec(before);
+  if (mHw) {
+    handwriting = before.slice(mHw.index + mHw[0].length).trim();
+  } else {
+    // 没写卷面标记时，若原文前面只剩很短一行，就当它是一句卷面描述
+    const lead = before.trim();
+    if (lead && lead.length <= 60 && !/\n\s*\n/.test(lead)) handwriting = lead;
+  }
+
+  // 常见收尾客套话清掉
+  text = text.replace(/\n*[（(]?\s*以上[^\n]{0,20}[)）]?\s*$/, "").trim();
+  handwriting = handwriting.replace(/^[是为：:\s]+/, "").replace(/\s+/g, " ").trim().slice(0, 80);
+
+  return { text, handwriting };
+}
+
 // ── 魔搭（ModelScope）AI 调用 —— 带「模型降级链」────────────────
 //
 // 背景（2026-10-08 的一次真实故障）：AI 平台会下架 / 改名模型。那天
@@ -647,6 +714,14 @@ export interface AiCallResult {
   content: string;
   model: string;
   attempts: AiAttempt[];
+  /**
+   * 上游给的收尾原因。`"length"` = **输出被长度上限截断了**。
+   *
+   * 为什么要把这个透出来：截断和"模型本来就说这么多"从正文上分不出来。
+   * 认字这一步一旦被截断，老师拿到的就是**半篇作文**，而界面上看不出异常 ——
+   * 评分于是基于半篇作文给出，还显得头头是道。必须让调用方能识别出这种情况。
+   */
+  finishReason?: string;
 }
 
 /**
@@ -782,6 +857,7 @@ export async function callModelscope(
 
       const data: any = await res.json().catch(() => null);
       const msg = data?.choices?.[0]?.message || {};
+      const finishReason = String(data?.choices?.[0]?.finish_reason || "");
       const rawContent = String(msg.content ?? "").trim();
       const stripped = stripThinkingNoise(rawContent);
       const content = stripped;
@@ -807,9 +883,11 @@ export async function callModelscope(
         kind,
         "succeeded",
         Date.now() - startedAt,
-        `使用 ${model} ｜ 正文 ${content.length} 字 ｜ 开头：${content.slice(0, 140).replace(/\s+/g, " ")}`
+        `使用 ${model} ｜ 正文 ${content.length} 字` +
+          (finishReason ? ` ｜ finish=${finishReason}` : "") +
+          ` ｜ 开头：${content.slice(0, 140).replace(/\s+/g, " ")}`
       );
-      return { content, model, attempts };
+      return { content, model, attempts, finishReason };
     } catch (e: any) {
       clearTimeout(timer);
       const aborted = e?.name === "AbortError";

@@ -423,6 +423,15 @@ export default function App() {
   const [essayTitle, setEssayTitle] = useState('');
   const [essayImages, setEssayImages] = useState<string[]>([]);
   const [isAnalyzingEssay, setIsAnalyzingEssay] = useState(false);
+  // ── 作文批阅拆成两步（2026-10-10）──────────────────────────────
+  // ① 扫描识别文字（只认字）→ ② 老师核对后批阅（只评分）。
+  // 原来是一次调用里让视觉模型"边认字边评分"：输出量大所以慢，而且认错字
+  // 老师看不见、评分就跟着错。拆开后中间多一道人工核对。
+  const [isOcrRunning, setIsOcrRunning] = useState(false);
+  const [ocrText, setOcrText] = useState('');
+  const [ocrHandwriting, setOcrHandwriting] = useState('');
+  const [ocrWarning, setOcrWarning] = useState('');
+  const [ocrModel, setOcrModel] = useState('');
   const [essayAnalysis, setEssayAnalysis] = useState<WritingRecord | null>(null);
   const [analysisHistory, setAnalysisHistory] = useState<WritingRecord[]>([]);
   const [authLoading, setAuthLoading] = useState(true);
@@ -519,6 +528,11 @@ export default function App() {
       setEssayAnalysis(null);
       setEssayTitle('');
       setEssayImages([]);
+      // 换学生就清掉上一位的识别结果 —— 否则文字留着，容易把 A 的作文批到 B 名下
+      setOcrText('');
+      setOcrHandwriting('');
+      setOcrWarning('');
+      setOcrModel('');
       setPreGeneratedAudio(null);
       if (isPlayingAudio && audioRef.current) {
         audioRef.current.pause();
@@ -774,6 +788,11 @@ export default function App() {
       // 在 setState 里再判一次上限：state 是异步的，外面读到的 length 可能是旧值
       setEssayImages(prev => (prev.length >= 2 ? prev : [...prev, dataUrl]));
     }
+    // 换了图，上一次的识别结果就作废了 —— 否则老师可能拿着旧文字去批阅新照片
+    setOcrText('');
+    setOcrHandwriting('');
+    setOcrWarning('');
+    setOcrModel('');
   };
 
   const selectedStudent = students.find(s => s.id === selectedStudentId) || students[0] || {
@@ -801,30 +820,75 @@ export default function App() {
     finally { setIsGenerating(false); }
   };
 
-  const analyzeEssay = async () => {
+  // ── 第一步：只认字 ────────────────────────────────────────────
+  // 抽出来单独一步，是为了让老师**看见**模型认成了什么。手写作文认错字是常态，
+  // 以前认错字评分跟着错、老师还看不出来；现在原文摊在眼前，顺手就能改。
+  const recognizeEssay = async () => {
     if (!essayTitle.trim() || essayImages.length === 0) return;
+    setIsOcrRunning(true);
+    setOcrWarning('');
+    try {
+      const formData = new FormData();
+      formData.append('title', essayTitle);
+      formData.append('studentId', selectedStudent.id || 'N/A');
+      formData.append('images', JSON.stringify(essayImages));
+
+      const res = await apiFetch('/api/essay_ocr', { method: 'POST', body: formData });
+
+      if (!res.ok) {
+        const raw = await res.text().catch(() => '');
+        let msg = '';
+        try {
+          msg = String(JSON.parse(raw)?.error || '');
+        } catch {
+          msg = raw.trim().startsWith('<')
+            ? `请求被服务器中途中断（HTTP ${res.status}）—— 多半是图片过大或处理超时，换张小一点的图再试`
+            : '';
+        }
+        throw new Error(msg || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      setOcrText(String(data.text || ''));
+      setOcrHandwriting(String(data.handwriting || ''));
+      setOcrModel(String(data.model || ''));
+      setOcrWarning(String(data.warning || ''));
+      // 新识别出来的文字，之前的报告就过期了
+      setEssayAnalysis(null);
+    } catch (err: any) {
+      console.error('Essay OCR Error:', err);
+      alert('识别失败: ' + err.message);
+    } finally {
+      setIsOcrRunning(false);
+    }
+  };
+
+  // ── 第二步：只评分 ────────────────────────────────────────────
+  // 提交的是**老师核对过的文字**，不再传图。这一步走文本链：候选更多、更快。
+  const analyzeEssay = async () => {
+    if (!essayTitle.trim() || !ocrText.trim()) return;
     setIsAnalyzingEssay(true);
     try {
       // 只告诉服务端"要批阅哪个学生"；批阅人是谁、记录归谁，由服务端按令牌决定
       const formData = new FormData();
       formData.append('title', essayTitle);
       formData.append('studentId', selectedStudent.id || 'N/A');
-      formData.append('images', JSON.stringify(essayImages));
+      formData.append('text', ocrText);
+      formData.append('handwriting', ocrHandwriting);
 
       const res = await apiFetch('/api/analyze_essay', { method: 'POST', body: formData });
 
       if (!res.ok) {
-        // 服务端自己的报错都是 JSON；拿到非 JSON（多半是平台层把请求掐断了，
-        // 例如请求体过大或处理超时）就必须区分开 —— 否则只剩一句
-        // "服务器错误"，连往哪个方向查都不知道。
-        const raw = await res.text().catch(() => "");
-        let msg = "";
+        // 服务端自己的报错都是 JSON；拿到非 JSON（多半是平台层把请求掐断了）
+        // 就必须区分开 —— 否则只剩一句"服务器错误"，连往哪个方向查都不知道。
+        const raw = await res.text().catch(() => '');
+        let msg = '';
         try {
-          msg = String(JSON.parse(raw)?.error || "");
+          msg = String(JSON.parse(raw)?.error || '');
         } catch {
-          msg = raw.trim().startsWith("<")
-            ? `请求被服务器中途中断（HTTP ${res.status}）—— 多半是图片过大或处理超时，换张小一点的图再试`
-            : "";
+          msg = raw.trim().startsWith('<')
+            ? `请求被服务器中途中断（HTTP ${res.status}）—— 请稍等一会儿重新点一次「开始批阅」`
+            : '';
         }
         throw new Error(msg || `HTTP ${res.status}`);
       }
@@ -832,11 +896,11 @@ export default function App() {
       const data = await res.json();
       setEssayAnalysis(data);
       setAnalysisHistory(prev => [data, ...prev]);
-      setEssayImages([]);
-      setEssayTitle('');
+      // ⚠️ 这里**不再清空图片和原文**：批阅失败或想重批时，不用重新拍照、重新识别。
+      //    要开始下一篇，老师自己删掉图片即可（删图会自动清掉识别结果）。
     } catch (err: any) {
       console.error("Essay Analysis Error:", err);
-      alert("阅卷失败: " + err.message);
+      alert("批阅失败: " + err.message);
     }
     finally { setIsAnalyzingEssay(false); }
   };
@@ -1663,7 +1727,11 @@ export default function App() {
                             {essayImages.map((img, idx) => (
                               <motion.div key={idx} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="relative aspect-[3/4] rounded-[24px] overflow-hidden border border-slate-200 group shadow-lg">
                                 <img src={img} alt="Essay" className="w-full h-full object-cover" />
-                                <button onClick={() => setEssayImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"><AlertCircle className="w-4 h-4" /></button>
+                                <button onClick={() => {
+                                  setEssayImages(prev => prev.filter((_, i) => i !== idx));
+                                  // 图变了，识别结果就作废：不能拿着旧文字去批阅新照片
+                                  setOcrText(''); setOcrHandwriting(''); setOcrWarning(''); setOcrModel('');
+                                }} className="absolute top-3 right-3 p-2 bg-rose-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-all shadow-xl"><AlertCircle className="w-4 h-4" /></button>
                               </motion.div>
                             ))}
                             {/* ✅ 修复：上传上限改为 2 张，与后端对齐 */}
@@ -1677,26 +1745,93 @@ export default function App() {
                           </div>
                         </div>
 
-                        <button onClick={analyzeEssay} disabled={isAnalyzingEssay || essayImages.length < 1 || !essayTitle.trim()} className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none">
-                          {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
-                          {isAnalyzingEssay ? "AI 正在深度阅卷..." : "开始深度诊断"}
+                        {/* ── ① 先只认字 ── */}
+                        <button
+                          onClick={recognizeEssay}
+                          disabled={isOcrRunning || isAnalyzingEssay || essayImages.length < 1 || !essayTitle.trim()}
+                          className="w-full py-4 bg-white border-2 border-emerald-500 text-emerald-700 rounded-[24px] font-black text-base hover:bg-emerald-50 transition-all flex items-center justify-center gap-3 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {isOcrRunning ? <Loader2 className="w-5 h-5 animate-spin" /> : <Search className="w-5 h-5" />}
+                          {isOcrRunning ? "正在识别文字…" : ocrText ? "重新识别文字" : "① 扫描识别文字"}
                         </button>
+
+                        {ocrText ? (
+                          <div className="rounded-[24px] border border-emerald-100 bg-emerald-50/40 p-5 space-y-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-[10px] font-black text-emerald-700 uppercase tracking-[0.2em]">
+                                ② 核对原文
+                              </span>
+                              <span className="text-[10px] font-bold text-slate-400">
+                                {ocrText.length} 字{ocrModel ? ` · ${ocrModel.split('/').pop()}` : ''}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 leading-relaxed">
+                              下面是 AI 认出来的原文。<strong className="text-slate-700">手写体难免认错字，请顺手改一下</strong>
+                              —— 改完再批阅，评分才准。认错一个字而没改，后面的点评就跟着错了。
+                            </p>
+                            {ocrWarning && (
+                              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 leading-relaxed">
+                                {ocrWarning}
+                              </p>
+                            )}
+                            <textarea
+                              value={ocrText}
+                              onChange={(e) => setOcrText(e.target.value)}
+                              placeholder="识别出的作文原文"
+                              className="w-full h-52 p-4 bg-white border border-slate-200 rounded-[20px] text-sm leading-relaxed outline-none focus:ring-8 focus:ring-emerald-500/5 focus:border-emerald-500 transition-all custom-scrollbar resize-none"
+                            />
+                            <div className="flex items-center gap-3">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] whitespace-nowrap">
+                                卷面
+                              </label>
+                              <input
+                                type="text"
+                                value={ocrHandwriting}
+                                onChange={(e) => setOcrHandwriting(e.target.value)}
+                                placeholder="字迹是否工整、有无涂改"
+                                className="flex-1 px-4 py-2.5 bg-white border border-slate-200 rounded-full text-xs font-bold outline-none focus:border-emerald-500 transition-all"
+                              />
+                            </div>
+                            <button
+                              onClick={analyzeEssay}
+                              disabled={isAnalyzingEssay || !ocrText.trim()}
+                              className="w-full py-5 bg-emerald-600 text-white rounded-[24px] font-black text-lg hover:bg-emerald-700 transition-all flex items-center justify-center gap-4 shadow-2xl shadow-emerald-200 disabled:opacity-50 disabled:shadow-none"
+                            >
+                              {isAnalyzingEssay ? <Loader2 className="w-6 h-6 animate-spin" /> : <Sparkles className="w-6 h-6" />}
+                              {isAnalyzingEssay ? "AI 正在批阅…" : "② 开始批阅"}
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-slate-400 leading-relaxed text-center">
+                            上传作文照片后，先点上面的「① 扫描识别文字」，
+                            <br />
+                            核对并改好原文，再点「② 开始批阅」。
+                          </p>
+                        )}
                       </div>
 
                       <div className="bg-white rounded-[32px] border border-slate-100 p-8 min-h-[450px] flex flex-col shadow-inner overflow-hidden">
                         {isAnalyzingEssay ? (
                           <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
                             <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce"><Sparkles className="w-10 h-10 text-emerald-600" /></div>
-                            <p className="text-lg text-slate-500 font-black animate-pulse">AI 正在阅读并分析您的作文...</p>
+                            <p className="text-lg text-slate-500 font-black animate-pulse">AI 正在批阅这篇作文…</p>
                           </div>
                         ) : essayAnalysis ? (
                           <div className="flex-1 overflow-y-auto pr-4 custom-scrollbar prose prose-sm prose-indigo max-w-none prose-p:leading-relaxed">
                             <ReactMarkdown>{essayAnalysis.analysis}</ReactMarkdown>
                           </div>
+                        ) : ocrText ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 opacity-60">
+                            <FileText className="w-20 h-20 text-emerald-300" />
+                            <p className="text-base text-emerald-700 font-black">文字已识别</p>
+                            <p className="text-xs text-slate-500 font-bold leading-relaxed max-w-[240px]">
+                              请在左边核对原文、改正认错的字，然后点「② 开始批阅」
+                            </p>
+                          </div>
                         ) : (
                           <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 opacity-30">
                             <FileText className="w-20 h-20 text-slate-300" />
-                            <p className="text-base text-slate-400 font-black">暂无分析报告，请先提交作文</p>
+                            <p className="text-base text-slate-400 font-black">暂无分析报告，请先上传作文并识别文字</p>
                           </div>
                         )}
                       </div>

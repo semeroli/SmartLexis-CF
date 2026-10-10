@@ -13,7 +13,9 @@ import {
   resolveOwnerTeacherId,
 } from "../../shared/api";
 
-// 作文阅卷。身份与归属全部由令牌推导：
+// 作文阅卷（**第二步：只评分**，2026-10-10 从"一遍过"拆出来）。
+// 第一步是 /api/essay_ocr（只认字），原文经老师核对后传到这里。
+// 身份与归属全部由令牌推导：
 //   学生  → 只能给自己批阅，记录归本班教师名下
 //   教师  → 只能给本班学生批阅（学生还没导入名单时按占位学号放行，不打断正常使用）
 //   管理员 → 不限
@@ -55,39 +57,22 @@ export async function onRequestPost(context: any) {
     }
 
     const formData = await request.formData();
-    const title = formData.get("title") || "未命名作文";
+    const title = String(formData.get("title") || "未命名作文");
     const requestedStudentId = String(formData.get("studentId") || "").trim();
-    const imagesJson = formData.get("images");
 
-    if (!imagesJson) throw new AuthError(400, "缺少作文图片");
+    // ── 2026-10-10 改成「两步走」的第二步：只评分 ───────────────────
+    // 原文由第一步（/api/essay_ocr）认出来、经老师核对修改后传进来。
+    // 这一步不再读图，因此可以走**文本链**（候选更多、更快、输出更干净），
+    // 也不会再出现"视觉模型慢到把预算吃光"的情况。
+    const essayText = String(formData.get("text") || "").trim();
+    const handwriting = String(formData.get("handwriting") || "").trim();
 
-    let essayImages: string[];
-    try {
-      essayImages = JSON.parse(imagesJson as string);
-    } catch (e) {
-      throw new AuthError(400, "图片数据格式错误");
+    if (!essayText) {
+      throw new AuthError(400, "缺少作文原文，请先完成「扫描识别文字」这一步");
     }
-
-    // 限制最多 2 张图
-    const safeImages = essayImages.slice(0, 2);
-    if (safeImages.length === 0) throw new AuthError(400, "未提供有效图片");
-
-    // 体量闸门。Cloudflare 免费版给单个请求的 CPU 时间只有 10 毫秒，而解析超大
-    // base64、再 JSON.stringify 成一个几 MB 的请求体转发给 AI，都是实打实的 CPU
-    // 开销 —— 一旦超限，平台会**直接掐断请求**，前端只能看到一句"服务器错误"，
-    // 排查起来毫无线索。与其被平台默默掐断，不如在这里明确告诉老师"图太大了"。
-    // （前端现在会先把图压到长边 1600px，正常一张约 200～500KB；走到这条说明
-    //   压缩没生效，例如浏览器太老或手动绕过了前端。）
-    const totalChars = safeImages.reduce(
-      (n: number, s: any) => n + (typeof s === "string" ? s.length : 0),
-      0
-    );
-    const MAX_TOTAL_CHARS = 8 * 1024 * 1024;
-    if (totalChars > MAX_TOTAL_CHARS) {
-      throw new AuthError(
-        413,
-        `图片过大（约 ${(totalChars / 1024 / 1024).toFixed(1)}MB），请重新拍摄或选择更小的图片后再试`
-      );
+    // 原文是老师核对过的，理论上不会太长；给个上限防止被塞进来一整本书
+    if (essayText.length > 20000) {
+      throw new AuthError(413, `作文原文过长（${essayText.length} 字），请检查是否粘贴了多余内容`);
     }
 
     // ── 归属与身份：服务端说了算 ────────────────────
@@ -114,40 +99,29 @@ export async function onRequestPost(context: any) {
     // 真正开始烧额度之前，先过每日配额闸门
     await checkAiQuota(env, user, "essay");
 
-    // 构造 OpenAI 格式的消息内容
-    const contentParts: any[] = [
-      {
-        type: "text",
-        text: `请对这篇题目为《${title}》的学生手写作文进行深度诊断。
-要求：
-1. 先完整识别图片中的作文文字内容。
-2. 从"立意深度、结构安排、语言表达、卷面书写"四个维度评分（满分60）。
-3. 给出优缺点与升格建议。
-4. 严格按照系统提示的 JSON 格式输出。`,
-      },
+    // 构造消息。原文以**引用块**的形式给出，并在首尾加标记 ——
+    // 原文里有引号、顿号、书名号，不加边界的话模型容易把指令和正文搅在一起。
+    const parts = [
+      `下面是一位学生的作文（文字稿已由老师核对）。`,
+      ``,
+      `题目：《${title}》`,
     ];
-
-    // 添加图片（OpenAI 多模态格式）
-    for (let img of safeImages) {
-      // 确保 base64 格式正确
-      if (!img.startsWith("data:image/")) {
-        img = `data:image/jpeg;base64,${img}`;
-      }
-      contentParts.push({
-        type: "image_url",
-        image_url: { url: img },
-      });
+    if (handwriting) {
+      // ⚠️ 四维评分里有一项「卷面书写」，而文字模型看不见卷面 ——
+      // 所以把第一步认字时拿到的卷面描述一并交给它。少这一句，这一项就只能瞎猜。
+      parts.push(`卷面情况（由识别步骤提供）：${handwriting}`);
     }
+    parts.push(``, `作文原文：`, `<<<<<<<<<<`, essayText, `>>>>>>>>>>`, ``);
+    parts.push(
+      `请从"立意深度、结构安排、语言表达、卷面书写"四个维度评分（满分60），`,
+      `给出优缺点与升格建议，并严格按照系统提示的 JSON 格式输出。`
+    );
 
-    console.log(`作文阅卷：${safeImages.length} 张图，题目《${title}》`);
-
-    // 阅卷要「读图」，所以走 vision 这条候选链（魔搭的视觉模型）。
-    // 原先用的是第三方中转站 apihub.agnes-ai.com —— 2026-10-08 起它对我们的
-    // 请求持续回 429（Cloudflare error code 1015 = 被限流），阅卷因此整个失效。
-    // 索性统一到魔搭：和另外三个 AI 功能同一家，少一个要单独维护的账号。
     const { content, model: usedModel, attempts } = await callModelscope(
       env,
-      "vision",
+      // 不读图了 ⇒ 走文本链。今天实测文本链里最快的模型 4～5 秒就有结果，
+      // 而且不会像视觉模型那样把整条链的时间预算吃光。
+      "text",
       [
         {
           role: "system",
@@ -155,7 +129,6 @@ export async function onRequestPost(context: any) {
 请严格按照以下 JSON 格式输出，不要输出其他文字：
 
 {
-  "essay_text": "作文原文内容",
   "score": 52,
   "dimensions": {
     "立意深度": 14,
@@ -167,25 +140,15 @@ export async function onRequestPost(context: any) {
   "weaknesses": ["不足1", "不足2"],
   "suggestions": ["建议1", "建议2"],
   "summary": "总体评价（100字以内）"
-}`,
+}
+
+注意：不要再输出作文原文（我们已经有了），只输出上面这些评分内容。`,
         },
-        {
-          role: "user",
-          content: contentParts,
-        },
+        { role: "user", content: parts.join("\n") },
       ],
-      // 时间安排（2026-10-09 实测校准）：单个模型最多等 32 秒，整条链最多 35 秒。
-      // 上限被平台的请求时长卡住 —— 实测 33.5 秒能正常返回，40.5 秒会被 Cloudflare
-      // 直接吐一张 502 HTML 页面（而不是我们的 JSON）。35 秒留出约 5 秒余量，
-      // 保证失败时返回的是能读懂的原因，而不是一张空白错误页。
-      // 阅卷是唯一需要读图的功能，本身耗时最长，所以单独放宽到这个上限。
-      // ⚠️ 单模型超时**不能**等于总预算 —— 2026-10-10 真实事故：
-      //   原来这里是 timeoutMs 32000 / totalBudgetMs 35000，结果读图模型（排在首位
-      //   的那个）一直不回，32 秒被掐断，整条链只剩 3 秒，备胎模型刚发出去就被判超时。
-      //   可那个备胎实测 2 秒就能答完 —— **它根本没得到机会。**
-      //   现在改成：每个模型最多 20 秒，总预算 33 秒（仍明显小于平台那条 ≈40 秒的线），
-      //   于是排在第二的模型至少有 13 秒可用。
-      { temperature: 0.2, maxTokens: 3500, timeoutMs: 20000, totalBudgetMs: 33000 }
+      // 单模型 15 秒、整条链 30 秒。输出里不再需要重复一遍作文原文，
+      // 所以 2000 token 足够，耗时也比原来读图评分短得多。
+      { temperature: 0.2, maxTokens: 2000, timeoutMs: 15000, totalBudgetMs: 30000 }
     );
 
     // 记下是哪个模型出的卷、路上还试过谁 ——
@@ -217,30 +180,38 @@ export async function onRequestPost(context: any) {
       }, 502, cors);
     }
 
-    // 连分数和原文都没有，说明这次识别基本没成功，同样不该当成结果返回
+    // ── 把「老师核对过的原文」钉回结果里 ──────────────────────────
+    // 拆分之后模型只负责评分，不再回传原文；而落库、历史记录、报告拼装
+    // 这三处都依赖 result.essay_text。所以在解析成功后统一注回去，
+    // 而且**以老师核对过的版本为准**（模型即便回了一段也一律覆盖）。
+    result.essay_text = essayText;
+    if (handwriting && !result.handwriting) result.handwriting = handwriting;
+
+    // 有原文是前提（上面已校验非空），所以只要看有没有分数就够了
     const hasScore = result && result.score !== null && result.score !== undefined;
-    const hasText = !!(result && typeof result.essay_text === "string" && result.essay_text.trim());
-    if (!hasScore && !hasText) {
+    if (!hasScore) {
       console.error("作文阅卷结果为空:", JSON.stringify(result).slice(0, 200));
       return jsonResponse({
-        error: "没能识别出作文内容或评分，请换一张更清晰的照片重试",
+        error: "AI 没能给出评分，请重新点一次「开始批阅」重试",
       }, 502, cors);
     }
 
-    // ⚠️ 不能让「模型说它没看懂」混成一份 0 分报告。
-    // 实测：传一张没有内容的图时，模型会老老实实回
-    //   essay_text="图片为纯红色，无文字作文内容，无法识别" + score=0
-    // 这是"格式合法、内容是失败声明"—— 直接落库、直接展示的话，
+    // ⚠️ 不能让「模型说它评不了」混成一份 0 分报告。
+    // 原文现在由第一步提供、老师核对过，所以"认不出字"不再走这条路；
+    // 但模型仍可能回一句"无法评分"同时给 score=0 —— 直接落库展示的话，
     // 老师会以为这篇作文被判了 0 分，比明确报错更糟。
-    const essayTextRaw = String(result?.essay_text || "");
-    const failureWords =
-      /无法识别|不能识别|无法看清|看不清|内容缺失|无文字|没有文字|无法进行内容分析|无法评分|图片(为|是)纯/;
-    if (Number(result?.score) === 0 && failureWords.test(essayTextRaw)) {
-      console.error("作文阅卷：模型表示没能识别出内容 —", essayTextRaw.slice(0, 120));
+    const scoringStallWords =
+      /无法评分|不能评分|无法进行内容分析|内容不足|无法评价|无法给出评分|无法判断/;
+    const summaryRaw = String(result?.summary || "") + String(result?.weaknesses?.[0] || "");
+    const noContent =
+      Array.isArray(result?.strengths) &&
+      result.strengths.length === 0 &&
+      Array.isArray(result?.suggestions) &&
+      result.suggestions.length === 0;
+    if (Number(result?.score) === 0 && (scoringStallWords.test(summaryRaw) || noContent)) {
+      console.error("作文阅卷：模型表示无法评分 —", summaryRaw.slice(0, 120));
       return jsonResponse({
-        error:
-          "这张图里没能识别出作文内容。请换一张更清晰、光线更好的照片重试" +
-          "（尽量只拍作文那一页，拍正、把字迹拍清楚）",
+        error: "AI 这次没能完成评分（可能认为原文内容不完整）。请检查原文是否完整，或重新点一次「开始批阅」",
       }, 502, cors);
     }
 
@@ -263,7 +234,7 @@ export async function onRequestPost(context: any) {
           studentId,
           teacherId,
           title,
-          result.essay_text || "",
+          essayText,
           analysisText,
           JSON.stringify(result),
           date
@@ -285,7 +256,7 @@ export async function onRequestPost(context: any) {
       studentId,
       teacherId,
       title,
-      essay_text: result.essay_text || '',
+      essay_text: essayText,
       analysis: analysisMarkdown,
       analysis_json: JSON.stringify(result),
       date,
@@ -295,7 +266,7 @@ export async function onRequestPost(context: any) {
     console.error("analyze_essay error:", err);
 
     if (err.name === "AbortError") {
-      return jsonResponse({ error: "阅卷超时（60秒），请稍后重试" }, 504, cors);
+      return jsonResponse({ error: "批阅超时，请稍后重试" }, 504, cors);
     }
     return errorResponse(err, request);
   }
