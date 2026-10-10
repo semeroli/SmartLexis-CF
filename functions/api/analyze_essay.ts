@@ -152,12 +152,13 @@ export async function onRequestPost(context: any) {
     //   评分 JSON（约 416 字）→ Qwen3.8-Flash-Next 13.9 秒
     //   评分 JSON（约 629 字）→ DeepSeek-V4.1-Flash 13.4 秒
     //
-    // ⚠️ 2026-10-10 起语义变了：`timeoutMs` 从此只管**握手**
-    //（多久之内必须把流开起来，开不起来就快速换下一个模型），
-    // 不再限制正文能写多久 —— 那由流式转发层的 safetyMs / stallMs 管。
-    // 原因：实测同一个模型两次可以差 7 倍（首字 8.2 秒 vs 61.6 秒），
-    // 拿总时长判生死只会误杀"慢但正常"的生成。
-    const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 30000 };
+    // 握手 18 秒：多久之内必须把流开起来；开不起来就快速换下一个模型。
+    // ⚠️ `timeoutMs` 从此只管**握手**，不再限制正文能写多久 —— 那归流式转发层的
+    //    safetyMs / stallMs 管。因为实测同一个模型两次可以差 7 倍
+    //    （同一提示词，首字 8.2 秒 vs 61.6 秒），拿总时长判生死只会误杀"慢但正常"的生成。
+    // 总预算 60 秒：2026-10-11 线上实测握手偶尔要 32 秒（免费额度被限流时排队），
+    //    只给 30 秒会一次全链失败；60 秒够每个候选模型各被握一次（典型 5～8 秒）。
+    const AI_OPTS = { temperature: 0.2, maxTokens: 2000, timeoutMs: 18000, totalBudgetMs: 60000 };
     // 这个接口出的是短 JSON（几百字），45 秒的安全上限绰绰有余。
     const STREAM_OPTS = { safetyMs: 45000, progressFrames: true };
 

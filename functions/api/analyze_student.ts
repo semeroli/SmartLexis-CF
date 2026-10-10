@@ -68,10 +68,12 @@ export async function onRequestPost(context: any) {
       { role: "system", content: "你是资深语文教育专家。" },
       { role: "user", content: prompt },
     ];
-    // 握手 20 秒（开不起流就换下一个模型）、总预算 30 秒。
-    // ⚠️ timeoutMs 从此只管**握手**，不再限制正文能写多久 ——
-    // 实测同一个模型两次差 7 倍，拿总时长判生死会误杀"慢但正常"的生成。
-    const AI_OPTS = { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 30000 };
+    // 握手 20 秒（开不起流就换下一个模型）、总预算 60 秒。
+    // ⚠️ timeoutMs 只管**握手**，不再限制正文能写多久 —— 那归 safetyMs / stallMs。
+    //    实测同一个模型两次差 7 倍，拿总时长判生死会误杀"慢但正常"的生成。
+    // 总预算放宽到 60 秒：2026-10-11 线上实测握手偶尔要 32 秒（限流时排队），
+    //    30 秒会一次全链失败，60 秒够后面的候选模型也有机会被握上。
+    const AI_OPTS = { temperature: 0.7, maxTokens: 2500, timeoutMs: 20000, totalBudgetMs: 60000 };
     // 这份报告约 1000～2500 字。实测出字速度约 90～110 字/秒，加上开头思考几秒，
     // 满打满算 30 秒上下；70 秒的安全上限留足余量（平台实测能撑 120 秒以上）。
     const STREAM_OPTS = { safetyMs: 70000, progressFrames: true };

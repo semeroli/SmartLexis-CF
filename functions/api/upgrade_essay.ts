@@ -62,8 +62,9 @@ ${content}
       { role: "system", content: "你是资深语文特级教师，擅长作文升格与教学点评。" },
       { role: "user", content: prompt },
     ];
-    // 握手 22 秒（这个接口提示词最长，模型受理得慢一点），总预算 31 秒。
-    const AI_OPTS = { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 31000 };
+    // 握手 22 秒（这个接口提示词最长，模型受理得慢一点），总预算 60 秒
+    //（缘由见 analyze_essay.ts 的同一处注释）
+    const AI_OPTS = { temperature: 0.7, maxTokens: 3500, timeoutMs: 22000, totalBudgetMs: 60000 };
     // 四个接口里产出最长（整篇升格范文，2000～2800 字），安全上限给到 90 秒。
     // 实测出字速度约 90～110 字/秒，2800 字约 25～30 秒，加上开头思考几秒 ——
     // 90 秒是给"平台那天特别慢"留的余量（平台本身实测能撑 120 秒以上）。
