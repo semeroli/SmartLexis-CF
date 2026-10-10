@@ -4,8 +4,11 @@ import {
   readAiDiag,
   probeAiChain,
   probeAiStream,
+  probeHeartbeat,
   claimAiProbe,
   keyFingerprint,
+  sseFrame,
+  sseHeaders,
   type AiModelKind,
 } from "../../shared/api";
 
@@ -21,14 +24,17 @@ import {
 //   分清是「平台侧挂了 / 额度用完了」还是「我们的代码有问题」。
 //   · ?probe=1           体检文本链（默认）
 //   · ?probe=1&kind=vision  体检视觉链（会真发一张 64×64 白图过去）
-//   · ?probe=1&stream=1  流式体检：不设总预算，专门测「流式响应能在平台活多久」，
-//                        用来确认长产出接口（作文升格）能不能一次做完。
+//   · ?probe=1&stream=1  流式体检：不设总预算，测「流式下模型多久开始出字、能不能跑完」。
 //                        加 &tokens=3000&timeout=60000 可把压力再调大。
-//   体检有 30 秒冷却 —— 它真花额度，不能放任连点。
+//   · ?probe=1&tick=1    心跳探针：只发字节、**不调模型、不花额度**，测「平台允许一个
+//                        流式响应活多久」（&seconds=120 可调，上限 120 秒）。
+//                        ⚠️ 它必须存在，因为上面两个都是「跑完再一次性返回 JSON」——
+//                        那样的响应自己也受同一个上限约束，量不出天花板本身。
+//   前两种体检有 30 秒冷却（真花额度）；心跳不花额度，所以不设冷却，可以连测。
 //
 // 有意义的后端改动后，把 BUILD 改掉即可。
 // ─────────────────────────────────────────────────────────────
-const BUILD = "2026-10-10-streaming";
+const BUILD = "2026-10-10-heartbeat";
 
 export const onRequestOptions = (context: any) =>
   new Response(null, { status: 204, headers: corsHeadersFor(context.request) });
@@ -79,6 +85,17 @@ export async function onRequestGet(context: any) {
 
   if (url.searchParams.get("probe") !== "1") {
     return jsonResponse(base, 200, noStore);
+  }
+
+  // ?probe=1&tick=1 → 心跳探针：只发字节、不调模型、不花额度，
+  // 专门量「平台允许一个流式响应活多久」。别的探针都是跑完再一次性返回，
+  // 那样的响应自己就受同一个上限约束，量不出天花板本身。
+  // 它不花额度，所以**不设冷却**，可以连测。
+  if (url.searchParams.get("tick") === "1") {
+    const rawSec = Number(url.searchParams.get("seconds") || "");
+    return probeHeartbeat({
+      seconds: Number.isFinite(rawSec) && rawSec > 0 ? rawSec : undefined,
+    });
   }
 
   const kind: AiModelKind = url.searchParams.get("kind") === "vision" ? "vision" : "text";

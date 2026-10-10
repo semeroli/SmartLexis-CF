@@ -1546,3 +1546,152 @@ export async function probeAiStream(
 
   return { kind, streaming: true, perModelTimeoutMs, maxTokens, results };
 }
+
+// ─────────────────────────────────────────────────────────────
+// 心跳探针（/api/version?probe=1&tick=1）
+//
+// 它是唯一能回答「流式响应到底能在平台上活多久」的东西，因为**别的探针都量不到**：
+// probeAiChain / probeAiStream 都是「跑完再一次性返回 JSON」，那样的响应自己就受
+// 同一个上限约束（实测普通请求 33.5s 可、40.5s 被 CF 掐断），量出来的只是"我们的
+// 预算"，不是"平台的天花板"。
+//
+// 心跳只往一个 text/event-stream 里每秒写一行、什么都不算、也不调模型 ——
+// 零额度消耗，可以放心跑到平台自己喊停，那条线在哪一秒就一目了然。
+//
+// 为什么要知道这条线：作文升格要吐 2500 字，按实测的 30～45 字/秒需要 50 秒以上。
+//   线在 40 秒 ⇒ 一次做不完，得改成"分段续写"；
+//   线在 90 秒 ⇒ 一次就能做完，现在的实现直接可用。
+// ─────────────────────────────────────────────────────────────
+
+export interface AiHeartbeatResult {
+  seconds: number;
+  intervalMs: number;
+  ticks: number;
+  /** 最后一次真正到达客户端的时间（毫秒）—— 没收到 done 帧时就是它断掉的时刻 */
+  elapsedMs: number;
+  /** 是否收到了收尾帧。缺它 = 中途被平台掐断 */
+  closed: boolean;
+  frames: any[];
+}
+
+/**
+ * 造一个心跳流响应。**不调模型、不花额度**，纯粹用来量平台对流式响应的时限。
+ * 同时导出成可离线验证的形式：测试里直接读这个 Response 的 body 就能断言。
+ */
+export function probeHeartbeat(opts: { seconds?: number; intervalMs?: number } = {}): Response {
+  const seconds = Math.min(Math.max(Math.round(opts.seconds ?? 60), 5), 120);
+  const intervalMs = Math.min(Math.max(Math.round(opts.intervalMs ?? 1000), 200), 5000);
+  const t0 = Date.now();
+  let timer: any = null;
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let closed = false;
+      const send = (obj: Record<string, any>) => {
+        if (closed) return;
+        try {
+          controller.enqueue(sseFrame(obj));
+        } catch (_) {
+          closed = true;
+        }
+      };
+      const finish = (obj: Record<string, any>) => {
+        if (closed) return;
+        send(obj);
+        closed = true;
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+        try {
+          controller.close();
+        } catch (_) {}
+      };
+
+      send({
+        type: "meta",
+        seconds,
+        intervalMs,
+        startedAt: new Date(t0).toISOString(),
+        note: "心跳探针：只发字节，不调模型，不花额度",
+      });
+
+      let n = 0;
+      timer = setInterval(() => {
+        n++;
+        const elapsedMs = Date.now() - t0;
+        if (n * intervalMs >= seconds * 1000) {
+          finish({
+            type: "done",
+            ticks: n,
+            elapsedMs,
+            survivedSec: Math.round(elapsedMs / 100) / 10,
+          });
+          return;
+        }
+        send({ type: "tick", n, elapsedMs });
+      }, intervalMs);
+    },
+    cancel() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    },
+  });
+
+  return new Response(body, { status: 200, headers: sseHeaders() });
+}
+
+/**
+ * 读一段 SSE 响应，把帧收成数组 —— 心跳探针的客户端侧。
+ * 判据很关键：**有没有收到 `type:"done"` 的收尾帧**。
+ * 缺它 = 平台在到达 seconds 之前就把连接掐了，elapsedMs 就是断点位置。
+ */
+export async function readHeartbeat(res: Response, onFrame?: (f: any) => void): Promise<AiHeartbeatResult> {
+  const t0 = Date.now();
+  const out: AiHeartbeatResult = { seconds: 0, intervalMs: 0, ticks: 0, elapsedMs: 0, closed: false, frames: [] };
+  const reader = res.body?.getReader();
+  if (!reader) return out;
+  const decoder = new TextDecoder();
+  let buf = "";
+  let lastAt = t0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    lastAt = Date.now();
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).replace(/\r$/, "");
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload) continue;
+      let obj: any = null;
+      try {
+        obj = JSON.parse(payload);
+      } catch (_) {
+        continue;
+      }
+      out.frames.push(obj);
+      if (typeof onFrame === "function") {
+        try {
+          onFrame(obj);
+        } catch (_) {}
+      }
+      if (obj.type === "meta") {
+        out.seconds = Number(obj.seconds) || 0;
+        out.intervalMs = Number(obj.intervalMs) || 0;
+      }
+      if (obj.type === "tick") out.ticks = Number(obj.n) || out.ticks;
+      if (obj.type === "done") {
+        out.closed = true;
+        out.elapsedMs = Number(obj.elapsedMs) || lastAt - t0;
+        out.ticks = Number(obj.ticks) || out.ticks;
+      }
+    }
+  }
+  if (!out.closed) out.elapsedMs = lastAt - t0;
+  return out;
+}
