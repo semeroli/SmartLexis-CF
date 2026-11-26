@@ -8,7 +8,17 @@
 <title>智语 SmartLexis · 让每一次诊断都指向下一步</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <script>
-/* 主题必须在**首屏渲染前**就定好，否则会先闪一下深色再跳成浅色（FOUC）。
+/* 0) 已登录的老师直接进工作台，不必每次先看一眼落地页。
+      只对根地址 "/" 生效（/welcome 永远能看到落地页，方便把链接发给别人）。
+      加 ?stay=1 可以强制停在落地页。 */
+(function () {
+  try {
+    if (location.pathname !== '/') return;
+    if (/[?&]stay=1/.test(location.search)) return;
+    if (localStorage.getItem('lexis_token')) location.replace('/app');
+  } catch (e) {}
+})();
+/* 1) 主题必须在**首屏渲染前**就定好，否则会先闪一下深色再跳成浅色（FOUC）。
    所以这段放在 <style> 之前、同步执行，唯一职责是把 data-theme / data-pref 写到 <html> 上。
    默认值 = 深色（老王要求）；用户手动选过就按 localStorage 来。 */
 (function () {
@@ -585,8 +595,8 @@ html[data-theme="light"] .cta-box{
           <svg class="ic-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>
           <svg class="ic-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         </button>
-        <a class="btn btn-ghost btn-sm login-btn" href="/">登录</a>
-        <a class="btn btn-primary btn-sm" href="/">进入工作台</a>
+        <a class="btn btn-ghost btn-sm login-btn" href="/app">登录</a>
+        <a class="btn btn-primary btn-sm" href="/app">进入工作台</a>
       </div>
     </div>
   </nav>
@@ -604,7 +614,7 @@ html[data-theme="light"] .cta-box{
           过去散在七八个工具里的事，<b>现在一个工作台走完</b>。
         </p>
         <div class="hero-cta reveal d3">
-          <a class="btn btn-primary" href="/">
+          <a class="btn btn-primary" href="/app">
             进入工作台
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
           </a>
@@ -778,7 +788,7 @@ html[data-theme="light"] .cta-box{
       <div class="cta-box reveal">
         <h2>先把一个班的数据放进去<br>看看它能说出什么</h2>
         <p>不需要安装、不需要配置。浏览器打开，导入一份成绩表，五分钟就能看到第一份学情诊断。</p>
-        <a class="btn btn-primary" href="/">
+        <a class="btn btn-primary" href="/app">
           进入工作台
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
         </a>
@@ -797,9 +807,9 @@ html[data-theme="light"] .cta-box{
         <span>© 2026 智语 SmartLexis · AI 语文教育诊断平台</span>
       </div>
       <div class="r">
-        <a href="/">工作台</a>
+        <a href="/app">工作台</a>
         <a href="#features">核心能力</a>
-        <a href="/">登录</a>
+        <a href="/app">登录</a>
       </div>
     </div>
   </footer>
