@@ -275,12 +275,29 @@ const Card = ({ title, subtitle, children, className, delay = 0, id }: any) => (
     initial={{ opacity: 0, y: 20 }}
     animate={{ opacity: 1, y: 0 }}
     transition={{ duration: 0.5, delay }}
-    className={cn("bg-white rounded-[32px] p-8 shadow-sm border border-slate-100 hover:shadow-xl hover:shadow-indigo-500/5 transition-all duration-500", className)}
+    className={cn(
+      // 卡片视觉：白底在大面积浅灰上会"发死"，所以补三道东西 ——
+      //   ① 顶部一道极淡的渐变高光（玻璃感）
+      //   ② 双层阴影：贴边的 1px 硬影 + 远处 24px 扩散影（比单层 shadow-sm 立体）
+      //   ③ hover 抬 1px，阴影染上品牌色
+      // 圆角从 32 收到 24：32 是"糖果风"，24 更接近大厂后台的克制感。
+      "relative overflow-hidden rounded-3xl border border-slate-200/70 bg-white p-7",
+      "shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-16px_rgba(16,24,40,0.14)]",
+      "transition-all duration-500",
+      "hover:-translate-y-px hover:border-indigo-200/80 hover:shadow-[0_1px_2px_rgba(16,24,40,0.04),0_18px_44px_-16px_rgba(79,70,229,0.22)]",
+      className
+    )}
   >
+    <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-slate-200 to-transparent" />
     {(title || subtitle) && (
-      <div className="mb-8">
-        {title && <h3 className="text-xl font-bold text-slate-900 tracking-tight">{title}</h3>}
-        {subtitle && <p className="text-xs text-slate-400 font-bold mt-1.5 uppercase tracking-widest">{subtitle}</p>}
+      <div className="mb-7">
+        {title && (
+          <h3 className="flex items-center gap-2.5 text-lg font-bold tracking-tight text-slate-900">
+            <span className="h-4 w-1 shrink-0 rounded-full bg-gradient-to-b from-indigo-500 to-cyan-400" />
+            {title}
+          </h3>
+        )}
+        {subtitle && <p className="mt-1.5 pl-3.5 text-[11px] font-bold uppercase tracking-widest text-slate-400">{subtitle}</p>}
       </div>
     )}
     {children}
@@ -292,15 +309,16 @@ const StatBox = ({ label, value, subValue, icon: Icon, colorClass, delay = 0 }: 
     initial={{ opacity: 0, scale: 0.95 }}
     animate={{ opacity: 1, scale: 1 }}
     transition={{ duration: 0.4, delay }}
-    className="bg-white p-6 rounded-[32px] border border-slate-100 shadow-sm flex items-center gap-5 group hover:border-indigo-100 transition-all duration-300"
+    className="group relative flex items-center gap-4 overflow-hidden rounded-3xl border border-slate-200/70 bg-white p-6 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-16px_rgba(16,24,40,0.14)] transition-all duration-300 hover:-translate-y-px hover:border-indigo-200/80 hover:shadow-[0_18px_44px_-16px_rgba(79,70,229,0.22)]"
   >
-    <div className={cn("w-14 h-14 rounded-2xl flex items-center justify-center transition-transform group-hover:scale-110 duration-500", colorClass)}>
-      <Icon className="w-7 h-7" />
+    <div className={cn("flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl ring-1 ring-black/[0.03] transition-transform duration-500 group-hover:scale-105", colorClass)}>
+      <Icon className="h-7 w-7" />
     </div>
-    <div>
-      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">{label}</p>
+    <div className="min-w-0">
+      <p className="mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">{label}</p>
       <div className="flex items-baseline gap-2">
-        <span className="text-2xl font-black text-slate-900">{value}</span>
+        {/* 数字用"深→浅"竖向渐变，比纯黑更有体积感；tabular-nums 保证位数不跳动 */}
+        <span className="bg-gradient-to-br from-slate-900 to-slate-600 bg-clip-text text-2xl font-black tabular-nums text-transparent">{value}</span>
         {subValue && <span className="text-xs font-bold text-emerald-500">{subValue}</span>}
       </div>
     </div>
@@ -524,7 +542,7 @@ const MaterialLibrary = ({ materials, onDelete }: { materials: WritingMaterial[]
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: idx * 0.05 }}
-            className="bg-white p-8 rounded-[32px] border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-indigo-500/5 transition-all group relative"
+            className="group relative rounded-3xl border border-slate-200/70 bg-white p-7 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-16px_rgba(16,24,40,0.14)] transition-all duration-500 hover:-translate-y-px hover:border-indigo-200/80 hover:shadow-[0_18px_44px_-16px_rgba(79,70,229,0.22)]"
           >
             <div className="flex justify-between items-start mb-4">
               <span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-full text-[10px] font-black uppercase tracking-widest">{m.theme}</span>
@@ -1728,14 +1746,30 @@ export default function App() {
   if (view === 'admin') return <AdminDashboard onLogout={handleLogout} />;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
+    <div className="relative min-h-screen bg-[#F5F6FA] font-sans text-slate-900 selection:bg-indigo-100 selection:text-indigo-900">
+      {/* 背景装饰层：极淡网格 + 顶部品牌光晕。
+          做成 fixed 而不是给 body 加背景，是为了"滚动时网格不动"，视觉更稳；
+          pointer-events-none 保证它永远不挡点击。 */}
+      <div aria-hidden className="pointer-events-none fixed inset-0 z-0">
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              'linear-gradient(to right, rgba(15,23,42,.035) 1px, transparent 1px), linear-gradient(to bottom, rgba(15,23,42,.035) 1px, transparent 1px)',
+            backgroundSize: '56px 56px',
+            maskImage: 'radial-gradient(ellipse 70% 48% at 50% 0%, #000 28%, transparent 74%)',
+            WebkitMaskImage: 'radial-gradient(ellipse 70% 48% at 50% 0%, #000 28%, transparent 74%)',
+          }}
+        />
+        <div className="absolute -top-40 left-1/2 h-[420px] w-[820px] -translate-x-1/2 rounded-full bg-indigo-400/10 blur-[90px]" />
+      </div>
       {/* Mobile Top Bar */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 h-16 bg-white border-b border-slate-100 z-[60] flex items-center justify-between px-6">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center">
-            <Sparkles className="text-white w-5 h-5" />
+      <div className="fixed inset-x-0 top-0 z-[60] flex h-16 items-center justify-between border-b border-slate-200/60 bg-white/80 px-5 backdrop-blur-xl lg:hidden">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-400 shadow-md shadow-indigo-500/30">
+            <Sparkles className="h-5 w-5 text-white" />
           </div>
-          <span className="font-bold text-lg tracking-tight">智语 SmartLexis</span>
+          <span className="text-[17px] font-bold tracking-tight">智语<span className="text-slate-400">·</span>SmartLexis</span>
         </div>
         <button onClick={() => setIsSidebarOpen(true)} className="p-2 text-slate-500 hover:bg-slate-50 rounded-xl transition-all">
           <Menu className="w-6 h-6" />
@@ -1758,33 +1792,37 @@ export default function App() {
               animate={{ x: 0 }}
               exit={{ x: '-100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="fixed top-0 left-0 h-full w-72 bg-slate-900 text-white z-[80] flex flex-col p-8 lg:hidden"
+              className="fixed left-0 top-0 z-[80] flex h-full w-72 flex-col overflow-hidden bg-[#0A0D18] p-6 text-white lg:hidden"
             >
-              <div className="flex items-center justify-between mb-12">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-indigo-500 rounded-xl flex items-center justify-center">
-                    <Sparkles className="text-white w-6 h-6" />
+              <div aria-hidden className="pointer-events-none absolute -left-16 -top-20 h-64 w-64 rounded-full bg-indigo-500/25 blur-3xl" />
+              <div className="relative mb-10 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-400 shadow-lg shadow-indigo-500/30">
+                    <Sparkles className="h-5 w-5 text-white" />
                   </div>
-                  <span className="font-bold text-lg">智语系统</span>
+                  <div className="min-w-0">
+                    <div className="text-[16px] font-bold leading-none tracking-tight">智语</div>
+                    <div className="mt-1.5 text-[9.5px] font-semibold uppercase tracking-[0.16em] text-slate-500">SmartLexis</div>
+                  </div>
                 </div>
                 <button onClick={() => setIsSidebarOpen(false)} className="p-2 text-slate-400 hover:text-white"><X className="w-6 h-6" /></button>
               </div>
               <nav className="space-y-2 flex-1">
                 {user?.role === 'teacher' && (
-                  <button onClick={() => { setView('teacher'); setIsSidebarOpen(false); }} className={cn("w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all", view === 'teacher' ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:bg-slate-800 hover:text-white")}>
+                  <button onClick={() => { setView('teacher'); setIsSidebarOpen(false); }} className={cn("relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-bold transition-colors duration-300", view === 'teacher' ? "border-l-2 border-indigo-400 bg-gradient-to-r from-indigo-500/25 via-indigo-500/[0.06] to-transparent text-white" : "border-l-2 border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white")}>
                     <BarChart3 className="w-5 h-5" /> 班级看板
                   </button>
                 )}
-                <button onClick={() => { setView('student'); setIsSidebarOpen(false); }} className={cn("w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all", view === 'student' ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:bg-slate-800 hover:text-white")}>
+                <button onClick={() => { setView('student'); setIsSidebarOpen(false); }} className={cn("relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-bold transition-colors duration-300", view === 'student' ? "border-l-2 border-indigo-400 bg-gradient-to-r from-indigo-500/25 via-indigo-500/[0.06] to-transparent text-white" : "border-l-2 border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white")}>
                   <Activity className="w-5 h-5" /> {user?.role === 'teacher' ? '学情诊断' : '我的诊断'}
                 </button>
-                <button onClick={() => { setView('materials'); setIsSidebarOpen(false); }} className={cn("w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all", view === 'materials' ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:bg-slate-800 hover:text-white")}>
+                <button onClick={() => { setView('materials'); setIsSidebarOpen(false); }} className={cn("relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-bold transition-colors duration-300", view === 'materials' ? "border-l-2 border-indigo-400 bg-gradient-to-r from-indigo-500/25 via-indigo-500/[0.06] to-transparent text-white" : "border-l-2 border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white")}>
                   <Bookmark className="w-5 h-5" /> {user?.role === 'teacher' ? '学生素材库' : '我的素材库'}
                 </button>
                 {user?.role === 'teacher' && (
                   <>
                     <div className="pt-8 pb-3 px-5 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">数据中心</div>
-                    <button onClick={downloadTemplate} className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold text-slate-400 hover:bg-slate-800 hover:text-white transition-all">
+                    <button onClick={downloadTemplate} className="relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl border-l-2 border-transparent text-sm font-bold text-slate-400 transition-colors duration-300 hover:bg-white/[0.05] hover:text-white">
                       <Download className="w-5 h-5" /> 下载模板
                     </button>
                     <label className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold text-slate-400 hover:bg-slate-800 hover:text-white transition-all cursor-pointer">
@@ -1794,7 +1832,7 @@ export default function App() {
                   </>
                 )}
               </nav>
-              <div className="mt-auto p-5 bg-slate-800/50 rounded-[32px] border border-slate-700/50">
+              <div className="mt-auto rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                 <div className="flex items-center justify-between">
                   <div className="truncate mr-4">
                     <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1 font-black">{user?.role === 'teacher' ? '教师' : '学生'}</p>
@@ -1812,29 +1850,39 @@ export default function App() {
       </AnimatePresence>
 
       {/* Desktop Sidebar */}
-      <aside className="fixed top-0 left-0 h-full w-64 bg-slate-900 text-white hidden lg:flex flex-col p-8 z-50">
-        <div className="flex items-center gap-4 mb-12 px-2">
-          <div className="w-12 h-12 bg-indigo-500 rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-500/20">
-            <Sparkles className="text-white w-7 h-7" />
+      <aside className="fixed left-0 top-0 z-50 hidden h-full w-64 flex-col overflow-hidden bg-[#0A0D18] p-6 text-white lg:flex">
+        {/* 侧栏光晕：顶部偏紫、底部偏青。纯 slate-900 在大屏上像一块黑板，
+            加两层径向光才有"深空"的层次；右边缘一道 1px 高光把侧栏和内容区切开。 */}
+        <div aria-hidden className="pointer-events-none absolute -left-16 -top-24 h-72 w-72 rounded-full bg-indigo-500/25 blur-3xl" />
+        <div aria-hidden className="pointer-events-none absolute -bottom-24 -right-16 h-64 w-64 rounded-full bg-cyan-400/15 blur-3xl" />
+        <div aria-hidden className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-transparent via-white/10 to-transparent" />
+        <div className="relative mb-8 flex items-center gap-3 px-1">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-cyan-400 shadow-lg shadow-indigo-500/30 ring-1 ring-white/20">
+            <Sparkles className="h-6 w-6 text-white" />
           </div>
-          <span className="font-bold text-xl tracking-tight">智语·SmartLexis</span>
+          {/* 侧栏只有 208px 内宽，横排「智语·SmartLexis」会折行并把菜单顶下去，
+              所以改成明确的两行字标（也是大厂后台常见的做法）。 */}
+          <div className="min-w-0">
+            <div className="text-[17px] font-bold leading-none tracking-tight">智语</div>
+            <div className="mt-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">SmartLexis</div>
+          </div>
         </div>
         <nav className="space-y-3 flex-1">
           {user?.role === 'teacher' && (
-            <button onClick={() => setView('teacher')} className={cn("w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all", view === 'teacher' ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:bg-slate-800 hover:text-white")}>
+            <button onClick={() => setView('teacher')} className={cn("relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-bold transition-colors duration-300", view === 'teacher' ? "border-l-2 border-indigo-400 bg-gradient-to-r from-indigo-500/25 via-indigo-500/[0.06] to-transparent text-white" : "border-l-2 border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white")}>
               <BarChart3 className="w-5 h-5" /> 班级看板
             </button>
           )}
-          <button onClick={() => setView('student')} className={cn("w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all", view === 'student' ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:bg-slate-800 hover:text-white")}>
+          <button onClick={() => setView('student')} className={cn("relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-bold transition-colors duration-300", view === 'student' ? "border-l-2 border-indigo-400 bg-gradient-to-r from-indigo-500/25 via-indigo-500/[0.06] to-transparent text-white" : "border-l-2 border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white")}>
             <Activity className="w-5 h-5" /> {user?.role === 'teacher' ? '学情诊断' : '我的诊断'}
           </button>
-          <button onClick={() => setView('materials')} className={cn("w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all", view === 'materials' ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-400 hover:bg-slate-800 hover:text-white")}>
+          <button onClick={() => setView('materials')} className={cn("relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl text-sm font-bold transition-colors duration-300", view === 'materials' ? "border-l-2 border-indigo-400 bg-gradient-to-r from-indigo-500/25 via-indigo-500/[0.06] to-transparent text-white" : "border-l-2 border-transparent text-slate-400 hover:bg-white/[0.05] hover:text-white")}>
             <Bookmark className="w-5 h-5" /> {user?.role === 'teacher' ? '学生素材库' : '我的素材库'}
           </button>
           {user?.role === 'teacher' && (
             <>
               <div className="pt-8 pb-3 px-5 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">数据中心</div>
-              <button onClick={downloadTemplate} className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold text-slate-400 hover:bg-slate-800 hover:text-white transition-all">
+              <button onClick={downloadTemplate} className="relative w-full flex items-center gap-3.5 px-4 py-3.5 rounded-xl border-l-2 border-transparent text-sm font-bold text-slate-400 transition-colors duration-300 hover:bg-white/[0.05] hover:text-white">
                 <Download className="w-5 h-5" /> 下载模板
               </button>
               <label className="w-full flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold text-slate-400 hover:bg-slate-800 hover:text-white transition-all cursor-pointer">
@@ -1844,7 +1892,7 @@ export default function App() {
             </>
           )}
         </nav>
-        <div className="mt-auto p-5 bg-slate-800/50 rounded-[32px] border border-slate-700/50">
+        <div className="relative mt-auto rounded-2xl border border-white/10 bg-white/[0.04] p-4">
           <div className="flex items-center justify-between mb-2">
             <div>
               <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1 font-black">{user?.role === 'teacher' ? '教师' : '学生'}</p>
@@ -1859,7 +1907,7 @@ export default function App() {
       </aside>
 
       {/* Mobile Bottom Nav */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-20 bg-white border-t border-slate-100 z-50 flex items-center justify-around px-4 pb-2">
+      <nav className="fixed inset-x-0 bottom-0 z-50 flex h-20 items-center justify-around border-t border-slate-200/60 bg-white/85 px-3 pb-2 backdrop-blur-xl lg:hidden">
         {user?.role === 'teacher' && (
           <button onClick={() => setView('teacher')} className={cn("flex flex-col items-center gap-1.5 px-4 py-2 rounded-2xl transition-all", view === 'teacher' ? "text-indigo-600" : "text-slate-400")}>
             <BarChart3 className="w-6 h-6" />
@@ -1885,19 +1933,24 @@ export default function App() {
       </nav>
 
       {/* Main Content */}
-      <main className="lg:ml-64 p-6 md:p-12 pt-24 lg:pt-12 max-w-7xl mx-auto pb-32 lg:pb-12">
+      <main className="relative z-10 mx-auto max-w-7xl p-6 pb-32 pt-24 md:p-12 lg:ml-64 lg:pb-12 lg:pt-12">
         <AnimatePresence mode="wait">
           {view === 'teacher' ? (
             <motion.div key="teacher" initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }} className="space-y-10">
               <header className="flex flex-col md:flex-row md:items-end justify-between gap-8">
                 <div>
-                  <h1 className="text-5xl font-black text-slate-900 tracking-tighter">班级学情看板</h1>
-                  <p className="text-slate-500 mt-3 font-bold text-lg">{user?.name}的班级 · 实时学情诊断分析</p>
+                  <h1 className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-500 bg-clip-text text-5xl font-black tracking-tighter text-transparent">班级学情看板</h1>
+                  <p className="mt-3 flex items-center gap-2 text-lg font-bold text-slate-500">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_2px_rgba(16,185,129,0.5)]" />
+                    {user?.name}的班级 · 实时学情诊断分析
+                  </p>
                 </div>
-                <div className="flex items-center justify-between gap-4">
-                  <div className="relative">
+                <div className="flex w-full items-center justify-between gap-2.5 md:w-auto md:gap-4">
+                  {/* ⚠️ 原来搜索框写死 w-80（320px），在 390px 手机上会把这行撑爆，
+                      右边的「新增学生」按钮被挤出屏幕。改成窄屏占满、md 以上才固定 320。 */}
+                  <div className="relative w-full md:w-80">
                     <Search className="w-5 h-5 absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input type="text" placeholder="搜索姓名或学号..." className="pl-14 pr-6 py-4 bg-white border border-slate-200 rounded-[24px] text-sm font-bold focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none w-80 transition-all shadow-sm" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                    <input type="text" placeholder="搜索姓名或学号..." className="w-full pl-14 pr-6 py-4 bg-white border border-slate-200 rounded-2xl text-sm font-bold focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 outline-none transition-all shadow-sm" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                   </div>
                   <button
                     onClick={() => {
@@ -1911,7 +1964,7 @@ export default function App() {
                     }}
                     title="新增学生"
                     aria-label="新增学生"
-                    className="p-4 bg-indigo-600 text-white rounded-[24px] shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                    className="shrink-0 rounded-2xl bg-indigo-600 p-4 text-white shadow-lg shadow-indigo-500/25 transition-all hover:-translate-y-px hover:bg-indigo-700 hover:shadow-xl hover:shadow-indigo-500/30"
                   ><Users className="w-6 h-6" /></button>
                 </div>
               </header>
@@ -2131,7 +2184,7 @@ export default function App() {
                         )}
                       </div>
 
-                      <div className="bg-white rounded-[32px] border border-slate-100 p-8 min-h-[450px] flex flex-col shadow-inner overflow-hidden">
+                      <div className="relative flex min-h-[450px] flex-col overflow-hidden rounded-3xl border border-slate-200/70 bg-white p-7 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_-16px_rgba(16,24,40,0.14)]">
                         {isAnalyzingEssay ? (
                           <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
                             <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center animate-bounce"><Sparkles className="w-10 h-10 text-emerald-600" /></div>
@@ -2331,7 +2384,7 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-[32px] p-10 w-full max-w-2xl shadow-2xl"
+              className="relative w-full max-w-2xl rounded-3xl border border-slate-200/70 bg-white p-8 shadow-[0_32px_80px_-20px_rgba(16,24,40,0.35)]"
               onClick={(e) => e.stopPropagation()}
             >
               <h3 className="text-2xl font-black text-slate-900 mb-8">{editingStudent.dbId ? '编辑学生成绩' : '新增学生'}</h3>
